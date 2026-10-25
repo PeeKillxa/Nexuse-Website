@@ -337,9 +337,11 @@ export async function GET() {
       const referenceTime = acc.server_updated_at || acc.updated_at || nowSec;
       const secondsSinceUpdate = Math.max(0, nowSec - referenceTime);
 
+      // 15-second grace period for room teleports / match replays
       const isTimedOut = secondsSinceUpdate > OFFLINE_TIMEOUT_SECONDS;
+      const isExplicitOffline = acc.status === "OFFLINE" && secondsSinceUpdate > 15;
       const effectiveStatus: "ONLINE" | "OFFLINE" =
-        acc.status === "OFFLINE" || isTimedOut ? "OFFLINE" : "ONLINE";
+        isTimedOut || isExplicitOffline ? "OFFLINE" : "ONLINE";
 
       return {
         ...acc,

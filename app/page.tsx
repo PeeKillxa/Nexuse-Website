@@ -253,12 +253,12 @@ export default function RobloxFarmDashboardPage() {
     []
   );
 
-  // Determine real-time online status on client as well (60 seconds threshold)
+  // Determine real-time online status on client as well (60 seconds threshold, 15s grace for teleports)
   const computeIsOnline = useCallback(
     (acc: AccountTelemetry, currentSec: number): boolean => {
-      if (acc.status?.toUpperCase() === "OFFLINE") return false;
       const refTime = acc.server_updated_at || acc.updated_at || currentSec;
       const age = Math.max(0, currentSec - refTime);
+      if (acc.status?.toUpperCase() === "OFFLINE" && age > 15) return false;
       return age <= 60;
     },
     []
