@@ -20,6 +20,7 @@ export interface TelemetryPayload {
   level?: number;
   gems?: number;
   gold?: number;
+  april_coins?: number;
   wins?: number;
   disconnects?: number;
   extra_stats?: Record<string, number | string | boolean>;
@@ -277,6 +278,12 @@ async function upsertAccountTelemetry(
     countedOffline = false;
   }
 
+  const incomingAprilCoins = Number(
+    payload.april_coins ?? payload.extra_stats?.april_coins ?? existing?.april_coins ?? 0
+  );
+  const aprilCoins =
+    incomingAprilCoins > 0 ? incomingAprilCoins : existing?.april_coins ?? 0;
+
   const avatarUrl = await resolveRobloxAvatar(userId, payload.avatar_url);
 
   const record: StoredAccount = {
@@ -299,6 +306,7 @@ async function upsertAccountTelemetry(
     level: Number(payload.level ?? existing?.level ?? 1),
     gems: incomingGems,
     gold: Number(payload.gold ?? existing?.gold ?? 0),
+    april_coins: aprilCoins,
     wins,
     disconnects,
     extra_stats:
@@ -371,11 +379,14 @@ export async function GET() {
       let disconnects = acc.disconnects ?? 0;
       let countedOffline = acc.counted_current_offline ?? false;
 
+      const aprilCoins = acc.april_coins ?? 0;
+
       if (effectiveStatus === "OFFLINE" && !countedOffline) {
         disconnects += 1;
         countedOffline = true;
         const updatedRecord: StoredAccount = {
           ...acc,
+          april_coins: aprilCoins,
           wins,
           disconnects,
           counted_current_offline: true,
@@ -385,6 +396,7 @@ export async function GET() {
 
       accounts.push({
         ...acc,
+        april_coins: aprilCoins,
         wins,
         disconnects,
         counted_current_offline: countedOffline,
@@ -398,6 +410,7 @@ export async function GET() {
       (totals, acc) => {
         totals.total_gems += acc.gems || 0;
         totals.total_gold += acc.gold || 0;
+        totals.total_april_coins += acc.april_coins || 0;
         totals.total_wins += acc.wins || 0;
         totals.total_disconnects += acc.disconnects || 0;
         totals.total_uptime_seconds += acc.uptime_seconds || 0;
@@ -414,6 +427,7 @@ export async function GET() {
         offline_count: 0,
         total_gems: 0,
         total_gold: 0,
+        total_april_coins: 0,
         total_wins: 0,
         total_disconnects: 0,
         total_uptime_seconds: 0,

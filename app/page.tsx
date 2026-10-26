@@ -20,6 +20,7 @@ interface AccountTelemetry {
   level: number;
   gems: number;
   gold: number;
+  april_coins: number;
   wins: number;
   disconnects: number;
   extra_stats: Record<string, number | string | boolean>;
@@ -45,6 +46,7 @@ interface TelemetryResponse {
     offline_count: number;
     total_gems: number;
     total_gold: number;
+    total_april_coins: number;
     total_wins: number;
     total_disconnects: number;
     total_uptime_seconds: number;
@@ -60,7 +62,13 @@ interface ToastAlert {
   timestamp: number;
 }
 
-type SortOption = "gems_desc" | "wins_desc" | "level_desc" | "online_first" | "gold_desc";
+type SortOption =
+  | "gems_desc"
+  | "april_coins_desc"
+  | "wins_desc"
+  | "level_desc"
+  | "online_first"
+  | "gold_desc";
 type StatusFilter = "ALL" | "ONLINE" | "OFFLINE";
 
 const OFFLINE_TIMEOUT_SECONDS = 120; // 120s (2 minutes) timeout to prevent false offline during teleports/replays
@@ -458,8 +466,11 @@ export default function RobloxFarmDashboardPage() {
         acc.status?.toUpperCase() === "OFFLINE" && secondsSinceUpdate > 15;
       const isTimedOut = secondsSinceUpdate > OFFLINE_TIMEOUT_SECONDS;
       const isOnline = !isExplicitOffline && !isTimedOut;
+      const aprilCoins =
+        acc.april_coins || Number(acc.extra_stats?.april_coins || 0) || 0;
       return {
         ...acc,
+        april_coins: aprilCoins,
         wins: acc.wins || 0,
         disconnects: acc.disconnects || 0,
         effective_status: (isOnline ? "ONLINE" : "OFFLINE") as
@@ -476,6 +487,7 @@ export default function RobloxFarmDashboardPage() {
       (acc, item) => {
         acc.total_gems += item.gems || 0;
         acc.total_gold += item.gold || 0;
+        acc.total_april_coins += item.april_coins || 0;
         acc.total_wins += item.wins || 0;
         acc.total_disconnects += item.disconnects || 0;
         acc.total_uptime_seconds += item.uptime_seconds || 0;
@@ -492,6 +504,7 @@ export default function RobloxFarmDashboardPage() {
         offline_count: 0,
         total_gems: 0,
         total_gold: 0,
+        total_april_coins: 0,
         total_wins: 0,
         total_disconnects: 0,
         total_uptime_seconds: 0,
@@ -520,6 +533,8 @@ export default function RobloxFarmDashboardPage() {
 
     return filtered.sort((a, b) => {
       if (sortBy === "gems_desc") return (b.gems || 0) - (a.gems || 0);
+      if (sortBy === "april_coins_desc")
+        return (b.april_coins || 0) - (a.april_coins || 0);
       if (sortBy === "wins_desc") return (b.wins || 0) - (a.wins || 0);
       if (sortBy === "level_desc") return (b.level || 0) - (a.level || 0);
       if (sortBy === "gold_desc") return (b.gold || 0) - (a.gold || 0);
@@ -821,9 +836,9 @@ end)
         </header>
 
         {/* ===================================================================
-            TOP SUMMARY HEADER BAR (5 Neon Glass Cards)
+            TOP SUMMARY HEADER BAR (6 Neon Glass Cards)
         =================================================================== */}
-        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {/* 1. TOTAL COMBINED GEMS */}
           <div className="group relative overflow-hidden rounded-3xl border border-cyan-500/30 bg-gradient-to-br from-slate-900/90 via-slate-900/70 to-cyan-950/40 p-5 backdrop-blur-xl shadow-[0_0_35px_-10px_rgba(6,182,212,0.3)]">
             <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-cyan-500/15 blur-2xl group-hover:bg-cyan-400/25 transition" />
@@ -853,7 +868,31 @@ end)
             </p>
           </div>
 
-          {/* 2. ONLINE ACCOUNTS STATUS */}
+          {/* 2. TOTAL COMBINED APRIL COINS */}
+          <div className="group relative overflow-hidden rounded-3xl border border-pink-500/35 bg-gradient-to-br from-slate-900/90 via-slate-900/70 to-fuchsia-950/45 p-5 backdrop-blur-xl shadow-[0_0_35px_-10px_rgba(236,72,153,0.3)]">
+            <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-pink-500/15 blur-2xl group-hover:bg-pink-400/25 transition" />
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wider text-pink-300/90">
+                Total AprilCoins
+              </span>
+              <span className="flex h-10 w-10 items-center justify-center rounded-2xl border border-pink-400/30 bg-pink-500/15 text-xl shadow-inner">
+                🌸
+              </span>
+            </div>
+            <div className="mt-3 flex items-baseline gap-2.5">
+              <p className="text-2xl sm:text-3xl font-black tracking-tight text-pink-100 tabular-nums drop-shadow-[0_0_12px_rgba(244,114,182,0.35)]">
+                {formatNumber(liveSummary.total_april_coins)}
+              </p>
+            </div>
+            <p className="mt-2 text-xs text-slate-400 flex items-center justify-between">
+              <span>ยอด AprilCoins รวมทุกจอ</span>
+              <span className="font-mono text-pink-300">
+                {formatCompact(liveSummary.total_april_coins)} Coins
+              </span>
+            </p>
+          </div>
+
+          {/* 3. ONLINE ACCOUNTS STATUS */}
           <div className="group relative overflow-hidden rounded-3xl border border-emerald-500/30 bg-gradient-to-br from-slate-900/90 via-slate-900/70 to-emerald-950/40 p-5 backdrop-blur-xl shadow-[0_0_35px_-10px_rgba(16,185,129,0.3)]">
             <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-emerald-500/15 blur-2xl group-hover:bg-emerald-400/25 transition" />
             <div className="flex items-center justify-between">
@@ -1048,6 +1087,12 @@ end)
                 >
                   <option value="gems_desc" className="bg-slate-900 text-white">
                     💎 เพชรมากสุด (Gems)
+                  </option>
+                  <option
+                    value="april_coins_desc"
+                    className="bg-slate-900 text-white"
+                  >
+                    🌸 AprilCoins มากสุด
                   </option>
                   <option value="wins_desc" className="bg-slate-900 text-white">
                     🏆 ชนะมากสุด (Wins)
@@ -1354,38 +1399,58 @@ end)
                       </div>
                     </div>
 
-                    {/* GEMS HIGHLIGHT BOX (With Green Flash Effect on Increase) */}
-                    <div
-                      className={`mt-5 rounded-2xl border p-4 transition-all duration-500 ${
-                        isGemFlashing
-                          ? "border-emerald-400 bg-gradient-to-r from-emerald-950/90 via-emerald-900/60 to-cyan-950/80 shadow-[0_0_25px_rgba(16,185,129,0.4)]"
-                          : "border-cyan-500/25 bg-slate-950/75"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold uppercase tracking-wider text-cyan-300 flex items-center gap-1.5">
-                          <span>💎</span>
-                          <span>GEMS BALANCE</span>
-                        </span>
-                        {displayedGemDelta > 0 && (
-                          <span className="inline-flex items-center gap-1 rounded-full border border-emerald-300/60 bg-emerald-500/30 px-2.5 py-0.5 text-xs font-black text-emerald-200 shadow-lg shadow-emerald-500/30 animate-bounce">
-                            ▲ +{formatNumber(displayedGemDelta)} Gems!
+                    {/* GEMS & APRIL COINS HIGHLIGHT BOXES */}
+                    <div className="mt-5 grid grid-cols-2 gap-2.5">
+                      <div
+                        className={`rounded-2xl border p-3.5 transition-all duration-500 ${
+                          isGemFlashing
+                            ? "border-emerald-400 bg-gradient-to-r from-emerald-950/90 via-emerald-900/60 to-cyan-950/80 shadow-[0_0_25px_rgba(16,185,129,0.4)]"
+                            : "border-cyan-500/25 bg-slate-950/75"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-[11px] font-bold uppercase tracking-wider text-cyan-300 flex items-center gap-1">
+                            <span>💎</span>
+                            <span>GEMS</span>
                           </span>
-                        )}
+                          {displayedGemDelta > 0 && (
+                            <span className="inline-flex items-center rounded-full border border-emerald-300/60 bg-emerald-500/30 px-1.5 py-0.2 text-[10px] font-black text-emerald-200 animate-bounce">
+                              +{formatCompact(displayedGemDelta)}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="mt-1 flex items-baseline justify-between gap-1">
+                          <span
+                            className={`text-xl sm:text-2xl font-black tracking-tight tabular-nums transition-colors duration-300 ${
+                              isGemFlashing
+                                ? "text-emerald-300 drop-shadow-[0_0_14px_rgba(52,211,153,0.75)]"
+                                : "text-white"
+                            }`}
+                          >
+                            {formatNumber(acc.gems)}
+                          </span>
+                        </div>
+                        <span className="block text-[10px] font-mono text-slate-400">
+                          ({formatCompact(acc.gems)})
+                        </span>
                       </div>
 
-                      <div className="mt-1.5 flex items-baseline justify-between gap-2">
-                        <span
-                          className={`text-2xl sm:text-3xl font-black tracking-tight tabular-nums transition-colors duration-300 ${
-                            isGemFlashing
-                              ? "text-emerald-300 drop-shadow-[0_0_14px_rgba(52,211,153,0.75)]"
-                              : "text-white"
-                          }`}
-                        >
-                          {formatNumber(acc.gems)}
-                        </span>
-                        <span className="text-xs font-mono text-slate-400">
-                          ({formatCompact(acc.gems)})
+                      <div className="rounded-2xl border border-pink-500/30 bg-gradient-to-br from-fuchsia-950/35 to-slate-950/80 p-3.5">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-[11px] font-bold uppercase tracking-wider text-pink-300 flex items-center gap-1">
+                            <span>🌸</span>
+                            <span>APRIL COINS</span>
+                          </span>
+                        </div>
+
+                        <div className="mt-1 flex items-baseline justify-between gap-1">
+                          <span className="text-xl sm:text-2xl font-black tracking-tight text-pink-100 tabular-nums drop-shadow-[0_0_10px_rgba(244,114,182,0.3)]">
+                            {formatNumber(acc.april_coins || 0)}
+                          </span>
+                        </div>
+                        <span className="block text-[10px] font-mono text-pink-300/80">
+                          ({formatCompact(acc.april_coins || 0)})
                         </span>
                       </div>
                     </div>

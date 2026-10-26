@@ -1,5 +1,5 @@
 -- ============================================================
--- 🤖 ROBLOX MULTI-ACCOUNT FARM TELEMETRY SENDER (v2.4)
+-- 🤖 ROBLOX MULTI-ACCOUNT FARM TELEMETRY SENDER (v2.5)
 -- Optimized for: Anime Adventures (Lobby + Story/Match) & All Games
 -- Author: cook45 for clack (Tuned for nexuse-website.vercel.app & Rokid Watchdog v3.0)
 -- วางสคริปต์นี้ใน Auto-Execute ของ Executor ทุกจอ
@@ -93,6 +93,7 @@ end)
 local sessionStartTime = os.time()
 local sessionWins = 0
 local sessionDisconnects = 0
+local cached_april_coins = 0
 local isFileSystemSupported = (writefile and readfile and isfile) and true or false
 local sendTelemetry -- forward declaration
 
@@ -107,10 +108,11 @@ if isFileSystemSupported then
                 if data.session_start and timeSinceLast >= 0 and timeSinceLast < 600 then
                     sessionStartTime = data.session_start
                 end
-                -- เก็บสถิติชนะ (Wins) และหลุด (Disconnects) ต่อเนื่องตลอด 24 ชั่วโมง (86400 วิ)
+                -- เก็บสถิติชนะ (Wins), หลุด (Disconnects), และ AprilCoins ต่อเนื่องตลอด 24 ชั่วโมง (86400 วิ)
                 if timeSinceLast >= 0 and timeSinceLast < 86400 then
                     sessionWins = tonumber(data.wins) or 0
                     sessionDisconnects = tonumber(data.disconnects) or 0
+                    cached_april_coins = tonumber(data.april_coins) or 0
                 end
             end
         end
@@ -127,7 +129,8 @@ local function saveSessionData()
             session_start = sessionStartTime,
             last_seen = os.time(),
             wins = sessionWins,
-            disconnects = sessionDisconnects
+            disconnects = sessionDisconnects,
+            april_coins = cached_april_coins
         }) .. "\n")
     end)
 end
@@ -372,35 +375,69 @@ local function findGuiStat(pattern)
     return nil
 end
 
--- ฟังก์ชันดึงค่า Gems / Gold / Level แบบละเอียด (รองรับทั้ง Lobby และห้องเล่น Story/Match)
+-- ฟังก์ชันดึงค่า Gems / Gold / Level / AprilCoins แบบละเอียด (รองรับทั้ง Lobby และห้องเล่น Story/Match)
 local function getGameStats()
     local stats = {
         gems = 0,
         gold = 0,
         level = 0,
-        rerolls = 0
+        rerolls = 0,
+        april_coins = 0
     }
 
     local pg = player:FindFirstChild("PlayerGui")
     if pg then
-        -- 1. ตรวจสอบ Level จากหน้าต่างในห้องเล่น Story / Match:
-        -- Path ตรง: PlayerGui.spawn_units.Lives.Main.Desc.Level (Text: "Level 7 [18/142]")
+        -- 1. ตรวจสอบ Level และ AprilCoins จากหน้าต่างในห้องเล่น Story / Match:
+        -- Level Path: PlayerGui.spawn_units.Lives.Main.Desc.Level
+        -- AprilCoins Path: PlayerGui.spawn_units.Lives.Frame.Resource.AprilCoins.Level
         pcall(function()
             local su = pg:FindFirstChild("spawn_units")
             if su then
-                local lvlObj = su:FindFirstChild("Lives") 
-                    and su.Lives:FindFirstChild("Main") 
-                    and su.Lives.Main:FindFirstChild("Desc") 
-                    and su.Lives.Main.Desc:FindFirstChild("Level")
-                
-                if lvlObj and (lvlObj:IsA("TextLabel") or lvlObj:IsA("TextBox")) then
-                    local lvl = parseLevel(lvlObj.Text)
-                    if lvl and lvl > 0 then
-                        stats.level = lvl
+                local lives = su:FindFirstChild("Lives")
+                if lives then
+                    local lvlObj = lives:FindFirstChild("Main") 
+                        and lives.Main:FindFirstChild("Desc") 
+                        and lives.Main.Desc:FindFirstChild("Level")
+                    
+                    if lvlObj and (lvlObj:IsA("TextLabel") or lvlObj:IsA("TextBox")) then
+                        local lvl = parseLevel(lvlObj.Text)
+                        if lvl and lvl > 0 then
+                            stats.level = lvl
+                        end
+                    end
+
+                    local aprilObj = lives:FindFirstChild("Frame")
+                        and lives.Frame:FindFirstChild("Resource")
+                        and lives.Frame.Resource:FindFirstChild("AprilCoins")
+                        and lives.Frame.Resource.AprilCoins:FindFirstChild("Level")
+
+                    if aprilObj and (aprilObj:IsA("TextLabel") or aprilObj:IsA("TextBox")) then
+                        local ac = parseNumber(aprilObj.Text)
+                        if ac > 0 then
+                            stats.april_coins = ac
+                        end
                     end
                 end
             end
         end)
+
+        -- Fallback สำหรับ AprilCoins กรณีอยู่ในหน้าต่างอื่นของ spawn_units หรือ PlayerGui
+        if stats.april_coins == 0 then
+            pcall(function()
+                for _, obj in ipairs(pg:GetDescendants()) do
+                    if obj.Name == "AprilCoins" then
+                        local lbl = obj:FindFirstChild("Level") or obj:FindFirstChild("Amount")
+                        if lbl and (lbl:IsA("TextLabel") or lbl:IsA("TextBox")) then
+                            local val = parseNumber(lbl.Text)
+                            if val > 0 then
+                                stats.april_coins = val
+                                break
+                            end
+                        end
+                    end
+                end
+            end)
+        end
 
         -- 2. ตรวจสอบ UI หน้ารวมตอนอยู่ใน Lobby (Spawn UI)
         pcall(function()
@@ -526,6 +563,15 @@ local function getGameStats()
         stats.rerolls = cached_rerolls
     end
 
+    if stats.april_coins > 0 then
+        if stats.april_coins ~= cached_april_coins then
+            cached_april_coins = stats.april_coins
+            saveSessionData()
+        end
+    else
+        stats.april_coins = cached_april_coins
+    end
+
     return stats
 end
 
@@ -556,6 +602,7 @@ sendTelemetry = function(customStatus)
         level = gameStats.level,
         gems = gameStats.gems,
         gold = gameStats.gold,
+        april_coins = gameStats.april_coins,
         wins = sessionWins,
         disconnects = sessionDisconnects,
         extra_stats = {
@@ -576,7 +623,7 @@ sendTelemetry = function(customStatus)
             Method = "POST",
             Headers = {
                 ["Content-Type"] = "application/json",
-                ["User-Agent"] = "RobloxTelemetry/2.4"
+                ["User-Agent"] = "RobloxTelemetry/2.5"
             },
             Body = HttpService:JSONEncode(payload)
         })
@@ -591,7 +638,7 @@ task.spawn(function()
     task.wait(2) -- รอ GUI สร้างตัว
     if env._COOK45_TRACKER_RUN_ID ~= CURRENT_RUN_ID then return end
     sendTelemetry()
-    print("[FarmDashboard] ✅ Telemetry v2.4 Connected -> " .. API_URL)
+    print("[FarmDashboard] ✅ Telemetry v2.5 Connected -> " .. API_URL)
 
     -- วนลูปส่งต่อเนื่องทุก 15 วินาที
     while task.wait(SEND_INTERVAL) do
