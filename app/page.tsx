@@ -20,6 +20,8 @@ interface AccountTelemetry {
   level: number;
   gems: number;
   gold: number;
+  wins: number;
+  disconnects: number;
   extra_stats: Record<string, number | string | boolean>;
   ping: number;
   fps: number;
@@ -43,6 +45,8 @@ interface TelemetryResponse {
     offline_count: number;
     total_gems: number;
     total_gold: number;
+    total_wins: number;
+    total_disconnects: number;
     total_uptime_seconds: number;
   };
   accounts: AccountTelemetry[];
@@ -50,14 +54,16 @@ interface TelemetryResponse {
 
 interface ToastAlert {
   id: string;
-  type: "gem_gain" | "offline" | "online" | "info";
+  type: "gem_gain" | "win_gain" | "offline" | "online" | "info";
   title: string;
   message: string;
   timestamp: number;
 }
 
-type SortOption = "gems_desc" | "level_desc" | "online_first" | "gold_desc";
+type SortOption = "gems_desc" | "wins_desc" | "level_desc" | "online_first" | "gold_desc";
 type StatusFilter = "ALL" | "ONLINE" | "OFFLINE";
+
+const OFFLINE_TIMEOUT_SECONDS = 120; // 120s (2 minutes) timeout to prevent false offline during teleports/replays
 
 // ============================================================================
 // WEB AUDIO API SOUND SYNTHESIZER (No external MP3 required)
@@ -83,7 +89,7 @@ class CyberAudioEngine {
     return this.ctx;
   }
 
-  // Play Crystal Chime when Gems increase
+  // Play Crystal Chime when Gems or Wins increase
   public playGemChime() {
     const ctx = this.getContext();
     if (!ctx) return;
@@ -212,6 +218,7 @@ export default function RobloxFarmDashboardPage() {
 
   // Visual Flash & Delta State (user_id -> delta amount)
   const [gemFlashMap, setGemFlashMap] = useState<Record<number, number>>({});
+  const [winFlashMap, setWinFlashMap] = useState<Record<number, number>>({});
   const [sessionGemGain, setSessionGemGain] = useState<number>(0);
   const [toasts, setToasts] = useState<ToastAlert[]>([]);
   const [showLuauModal, setShowLuauModal] = useState<boolean>(false);
@@ -221,9 +228,9 @@ export default function RobloxFarmDashboardPage() {
   );
 
   // Refs for comparing previous poll state without re-triggering effects
-  const prevAccountsRef = useRef<Map<number, { gems: number; isOnline: boolean }>>(
-    new Map()
-  );
+  const prevAccountsRef = useRef<
+    Map<number, { gems: number; wins: number; isOnline: boolean }>
+  >(new Map());
   const isFirstFetchRef = useRef<boolean>(true);
   const audioEngineRef = useRef<CyberAudioEngine | null>(null);
 
@@ -231,7 +238,7 @@ export default function RobloxFarmDashboardPage() {
     audioEngineRef.current = new CyberAudioEngine();
   }, []);
 
-  // Tick every 1s to keep relative timestamps and 60s heartbeat timeout live
+  // Tick every 1s to keep relative timestamps and 120s heartbeat timeout live
   useEffect(() => {
     const timer = setInterval(() => {
       setNowTick(Math.floor(Date.now() / 1000));
@@ -253,13 +260,13 @@ export default function RobloxFarmDashboardPage() {
     []
   );
 
-  // Determine real-time online status on client as well (60 seconds threshold, 15s grace for teleports)
+  // Determine real-time online status on client (120 seconds threshold, 15s grace for teleports)
   const computeIsOnline = useCallback(
     (acc: AccountTelemetry, currentSec: number): boolean => {
       const refTime = acc.server_updated_at || acc.updated_at || currentSec;
       const age = Math.max(0, currentSec - refTime);
       if (acc.status?.toUpperCase() === "OFFLINE" && age > 15) return false;
-      return age <= 60;
+      return age <= OFFLINE_TIMEOUT_SECONDS;
     },
     []
   );
@@ -287,6 +294,7 @@ export default function RobloxFarmDashboardPage() {
 
         const incoming = data.accounts || [];
         const newFlashEntries: Record<number, number> = {};
+        const newWinFlashEntries: Record<number, number> = {};
         let totalNewGemsThisPoll = 0;
         let shouldPlayGemSound = false;
         let shouldPlayOfflineSound = false;
@@ -311,13 +319,25 @@ export default function RobloxFarmDashboardPage() {
               );
             }
 
+            // Check if Wins increased
+            if ((acc.wins || 0) > (prev.wins || 0)) {
+              const wDiff = (acc.wins || 0) - (prev.wins || 0);
+              newWinFlashEntries[acc.user_id] = wDiff;
+              shouldPlayGemSound = true;
+              pushToast(
+                "win_gain",
+                `🏆 ชนะด่านสำเร็จ! (+${wDiff} Win)`,
+                `@${acc.username} ชนะสะสมรวม ${formatNumber(acc.wins)} รอบแล้ว!`
+              );
+            }
+
             // Check if Account dropped from ONLINE -> OFFLINE
             if (prev.isOnline && !isNowOnline) {
               shouldPlayOfflineSound = true;
               pushToast(
                 "offline",
                 `🔴 ไอดีหลุด (OFFLINE)!`,
-                `@${acc.username} ไม่ส่ง Heartbeat เกิน 60 วินาที`
+                `@${acc.username} ขาดการติดต่อเกิน ${OFFLINE_TIMEOUT_SECONDS} วินาที`
               );
             } else if (!prev.isOnline && isNowOnline) {
               pushToast(
@@ -330,6 +350,7 @@ export default function RobloxFarmDashboardPage() {
 
           prevAccountsRef.current.set(acc.user_id, {
             gems: acc.gems,
+            wins: acc.wins || 0,
             isOnline: isNowOnline,
           });
         });
@@ -343,6 +364,19 @@ export default function RobloxFarmDashboardPage() {
             setGemFlashMap((prev) => {
               const next = { ...prev };
               Object.keys(newFlashEntries).forEach((k) => {
+                delete next[Number(k)];
+              });
+              return next;
+            });
+          }, 4200);
+        }
+
+        if (Object.keys(newWinFlashEntries).length > 0) {
+          setWinFlashMap((prev) => ({ ...prev, ...newWinFlashEntries }));
+          setTimeout(() => {
+            setWinFlashMap((prev) => {
+              const next = { ...prev };
+              Object.keys(newWinFlashEntries).forEach((k) => {
                 delete next[Number(k)];
               });
               return next;
@@ -396,23 +430,6 @@ export default function RobloxFarmDashboardPage() {
     return () => clearInterval(countdownInterval);
   }, [autoRefresh, refreshIntervalSec, fetchTelemetry]);
 
-  // Simulator / Management Actions
-  const handleSimulatorAction = async (
-    action: "seed_demo" | "simulate_gem_gain" | "simulate_disconnect"
-  ) => {
-    setIsRefreshing(true);
-    try {
-      await fetch("/api/telemetry", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      });
-      await fetchTelemetry(true);
-    } finally {
-      setIsRefreshing(false);
-    }
-  };
-
   const handleDeleteAccount = async (userId: number, username: string) => {
     await fetch(`/api/telemetry?user_id=${userId}`, { method: "DELETE" });
     prevAccountsRef.current.delete(userId);
@@ -432,15 +449,19 @@ export default function RobloxFarmDashboardPage() {
     setTimeout(() => setCopiedText(null), 2000);
   };
 
-  // Enrich accounts with live 1-second accuracy for 60s timeout
+  // Enrich accounts with live 1-second accuracy for 120s timeout (+ 15s teleport grace)
   const enrichedAccounts = useMemo(() => {
     return accounts.map((acc) => {
       const refTime = acc.server_updated_at || acc.updated_at || nowTick;
       const secondsSinceUpdate = Math.max(0, nowTick - refTime);
-      const isOnline =
-        acc.status?.toUpperCase() !== "OFFLINE" && secondsSinceUpdate <= 60;
+      const isExplicitOffline =
+        acc.status?.toUpperCase() === "OFFLINE" && secondsSinceUpdate > 15;
+      const isTimedOut = secondsSinceUpdate > OFFLINE_TIMEOUT_SECONDS;
+      const isOnline = !isExplicitOffline && !isTimedOut;
       return {
         ...acc,
+        wins: acc.wins || 0,
+        disconnects: acc.disconnects || 0,
         effective_status: (isOnline ? "ONLINE" : "OFFLINE") as
           | "ONLINE"
           | "OFFLINE",
@@ -455,6 +476,8 @@ export default function RobloxFarmDashboardPage() {
       (acc, item) => {
         acc.total_gems += item.gems || 0;
         acc.total_gold += item.gold || 0;
+        acc.total_wins += item.wins || 0;
+        acc.total_disconnects += item.disconnects || 0;
         acc.total_uptime_seconds += item.uptime_seconds || 0;
         if (item.effective_status === "ONLINE") {
           acc.online_count += 1;
@@ -469,6 +492,8 @@ export default function RobloxFarmDashboardPage() {
         offline_count: 0,
         total_gems: 0,
         total_gold: 0,
+        total_wins: 0,
+        total_disconnects: 0,
         total_uptime_seconds: 0,
       }
     );
@@ -495,6 +520,7 @@ export default function RobloxFarmDashboardPage() {
 
     return filtered.sort((a, b) => {
       if (sortBy === "gems_desc") return (b.gems || 0) - (a.gems || 0);
+      if (sortBy === "wins_desc") return (b.wins || 0) - (a.wins || 0);
       if (sortBy === "level_desc") return (b.level || 0) - (a.level || 0);
       if (sortBy === "gold_desc") return (b.gold || 0) - (a.gold || 0);
       if (sortBy === "online_first") {
@@ -510,115 +536,182 @@ export default function RobloxFarmDashboardPage() {
   const endpointUrl =
     typeof window !== "undefined"
       ? `${window.location.origin}/api/telemetry`
-      : "https://your-project.vercel.app/api/telemetry";
+      : "https://nexuse-website.vercel.app/api/telemetry";
+
+  const oneLinerLoadstring = `loadstring(game:HttpGet("https://cdn.jsdelivr.net/gh/PeeKillxa/AA_Macro@main/tracker.lua"))()`;
 
   const sampleLuauScript = `-- ============================================================
--- ROBLOX MULTI-ACCOUNT FARM TELEMETRY SENDER (Executor Luau)
--- วางสคริปต์นี้ใน Auto-Execute ของ Executor ทุกจอ
+-- 🤖 ROBLOX MULTI-ACCOUNT FARM TELEMETRY SENDER (v2.4)
+-- Optimized for: Anime Adventures (Lobby + Story/Match) & All Games
+-- ตรวจจับชนะด่าน (ResultsUI), นับจำนวนครั้งที่หลุด (Disconnects), กันเตะ Code 285 ตอนวาร์ป
 -- ============================================================
+
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local env = (getgenv and getgenv()) or _G
+local CURRENT_RUN_ID = tostring(os.clock()) .. "_" .. tostring(math.random(100000, 999999))
+env._COOK45_TRACKER_RUN_ID = CURRENT_RUN_ID
+
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local Stats = game:GetService("Stats")
 local MarketplaceService = game:GetService("MarketplaceService")
+local RunService = game:GetService("RunService")
+local VirtualUser = game:GetService("VirtualUser")
+local GuiService = game:GetService("GuiService")
 
 local API_URL = "${endpointUrl}"
-local SEND_INTERVAL = 15 -- ส่งข้อมูลทุกๆ 15 วินาที (ถ้าเกิน 60 วินาทีเว็บจะขึ้น OFFLINE)
-local startTime = os.time()
+local SEND_INTERVAL = 15 -- ส่งข้อมูลทุกๆ 15 วินาที (Timeout ฝั่งเว็บ 120 วินาที รองรับตอนโหลดแมพ/วาร์ป)
 
 local httpRequest = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
 if not httpRequest then
-    warn("[FarmDashboard] Executor ของคุณไม่รองรับฟังก์ชัน http_request")
+    warn("[FarmDashboard] ❌ Executor ของคุณไม่รองรับคำสั่ง http_request / request")
     return
 end
 
 local player = Players.LocalPlayer or Players.PlayerAdded:Wait()
 
--- ดึงชื่อแมพเกมอัตโนมัติ
-local gameName = "Roblox Game"
+-- ป้องกัน AFK 20 นาที
 pcall(function()
-    local info = MarketplaceService:GetProductInfo(game.PlaceId)
-    if info and info.Name then gameName = info.Name end
+    player.Idled:Connect(function()
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new(0, 0))
+        end)
+    end)
 end)
 
--- ฟังก์ชันคำนวณ FPS ปัจจุบัน
-local currentFps = 60
-game:GetService("RunService").RenderStepped:Connect(function(dt)
-    if dt > 0 then
-        currentFps = math.clamp(math.floor(1 / dt), 1, 240)
-    end
-end)
+local sessionFile = string.format("bot_session_%s.json", tostring(player.UserId))
+local heartbeatFile = "watchdog_heartbeat.txt"
+local rokidCheckFile = string.format("executor_check_%s.txt", tostring(player.Name))
+local isKickedOrDisconnected = false
+local sessionStartTime = os.time()
+local sessionWins = 0
+local sessionDisconnects = 0
+local isFileSystemSupported = (writefile and readfile and isfile) and true or false
+local sendTelemetry
 
--- ฟังก์ชันอ่านค่า Gems / Gold / Level จาก leaderstats หรือ Attribute
-local function getStatValue(names, fallback)
-    for _, folderName in ipairs({"leaderstats", "Stats", "Data", "PlayerData"}) do
-        local folder = player:FindFirstChild(folderName)
-        if folder then
-            for _, name in ipairs(names) do
-                local obj = folder:FindFirstChild(name)
-                if obj and obj.Value ~= nil then
-                    return tonumber(obj.Value) or fallback
+if isFileSystemSupported then
+    pcall(function()
+        if delfile and isfile("watchdog_disconnected.txt") then
+            delfile("watchdog_disconnected.txt")
+        end
+        if isfile(sessionFile) then
+            local data = HttpService:JSONDecode(readfile(sessionFile))
+            if data and data.last_seen then
+                local age = os.time() - data.last_seen
+                if data.session_start and age >= 0 and age < 600 then
+                    sessionStartTime = data.session_start
+                end
+                if age >= 0 and age < 86400 then
+                    sessionWins = tonumber(data.wins) or 0
+                    sessionDisconnects = tonumber(data.disconnects) or 0
                 end
             end
         end
-    end
-    for _, name in ipairs(names) do
-        local attr = player:GetAttribute(name)
-        if attr ~= nil then return tonumber(attr) or fallback end
-    end
-    return fallback
-end
-
-local function sendTelemetry()
-    local pingMs = 50
-    pcall(function()
-        pingMs = math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue())
-    end)
-
-    local payload = {
-        user_id = player.UserId,
-        username = player.Name,
-        display_name = player.DisplayName,
-        avatar_url = string.format(
-            "https://www.roblox.com/headshot-thumbnail/image?userId=%d&width=150&height=150&format=png",
-            player.UserId
-        ),
-        account_age = player.AccountAge,
-        game_name = gameName,
-        place_id = game.PlaceId,
-        job_id = game.JobId ~= "" and game.JobId or "private-server",
-        status = "ONLINE",
-        level = getStatValue({"Level", "Lvl", "lv"}, 1),
-        gems = getStatValue({"Gems", "Gem", "Jewels", "Emeralds"}, 0),
-        gold = getStatValue({"Gold", "Coins", "Cash", "Yen", "Beli"}, 0),
-        extra_stats = {
-            rerolls = getStatValue({"Rerolls", "TraitRerolls", "Spins"}, 0)
-        },
-        ping = pingMs,
-        fps = currentFps,
-        uptime_seconds = os.time() - startTime,
-        updated_at = os.time()
-    }
-
-    pcall(function()
-        httpRequest({
-            Url = API_URL,
-            Method = "POST",
-            Headers = {
-                ["Content-Type"] = "application/json"
-            },
-            Body = HttpService:JSONEncode(payload)
-        })
     end)
 end
 
--- ส่งครั้งแรกทันทีและวนลูปส่งต่อเนื่อง
+local function saveSessionData()
+    if not isFileSystemSupported then return end
+    pcall(function()
+        writefile(sessionFile, HttpService:JSONEncode({
+            user_id = player.UserId,
+            username = player.Name,
+            session_start = sessionStartTime,
+            last_seen = os.time(),
+            wins = sessionWins,
+            disconnects = sessionDisconnects
+        }) .. "\\n")
+    end)
+end
+
+local function pulseHeartbeat()
+    if not isFileSystemSupported or isKickedOrDisconnected or env._COOK45_TRACKER_RUN_ID ~= CURRENT_RUN_ID then return end
+    pcall(function()
+        local nowEpoch = tostring(os.time())
+        writefile(heartbeatFile, nowEpoch .. "\\n")
+        writefile(rokidCheckFile, "working:" .. nowEpoch .. "\\n")
+        saveSessionData()
+    end)
+end
+
+local function onDisconnectDetected(reason)
+    if isKickedOrDisconnected then return end
+    isKickedOrDisconnected = true
+    sessionDisconnects = sessionDisconnects + 1
+    pcall(function()
+        saveSessionData()
+        if delfile and isfile and isfile(heartbeatFile) then delfile(heartbeatFile) end
+        if writefile then writefile("watchdog_disconnected.txt", tostring(reason) .. "\\n") end
+    end)
+    task.spawn(function()
+        if sendTelemetry then pcall(sendTelemetry, "OFFLINE") end
+    end)
+end
+
+pcall(function()
+    GuiService.ErrorMessageChanged:Connect(function(msg)
+        pcall(function()
+            local code = GuiService:GetErrorCode().Value
+            local lowerMsg = tostring(msg or ""):lower()
+            if code == 285 or lowerMsg:find("disconnectclientinitiated") or lowerMsg:find("teleport") or lowerMsg:find("joining") then
+                return
+            end
+            if code >= Enum.ConnectionError.DisconnectErrors.Value then
+                onDisconnectDetected(string.format("GuiService Error [Code %d]: %s", code, tostring(msg)))
+            end
+        end)
+    end)
+end)
+
+-- ตรวจจับการชนะด่านจาก ResultsUI (Anime Adventures)
+local hasCountedMatchResult = false
+local function getCurrentWave()
+    local ok, val = pcall(function()
+        return workspace._wave_num and tonumber(workspace._wave_num.Value) or 0
+    end)
+    return (ok and val) or 0
+end
+
 task.spawn(function()
-    while task.wait(SEND_INTERVAL) do
-        sendTelemetry()
+    while task.wait(0.5) do
+        if env._COOK45_TRACKER_RUN_ID ~= CURRENT_RUN_ID then break end
+        pcall(function()
+            local pg = player:FindFirstChild("PlayerGui")
+            local rui = pg and pg:FindFirstChild("ResultsUI")
+            local holder = rui and rui:FindFirstChild("Holder")
+            local finished = rui and rui:FindFirstChild("Finished")
+            local isResultsOpen = rui and (
+                rui.Enabled == true
+                or (holder and holder.Visible == true)
+                or (finished and finished.Visible == true)
+            )
+            if isResultsOpen then
+                if not hasCountedMatchResult then
+                    local titleObj = holder and holder:FindFirstChild("Title")
+                    local titleText = titleObj and tostring(titleObj.Text or ""):upper() or ""
+                    local isDefeat = titleText:find("DEFEAT") ~= nil or titleText:find("LOSE") ~= nil
+                    local isVictory = titleText:find("VICTORY") ~= nil or (finished and finished.Visible and not isDefeat)
+                    if isVictory or isDefeat then
+                        hasCountedMatchResult = true
+                        if isVictory then
+                            sessionWins = sessionWins + 1
+                            saveSessionData()
+                            if sendTelemetry then task.spawn(function() pcall(sendTelemetry, "ONLINE") end) end
+                        end
+                    end
+                end
+            elseif hasCountedMatchResult and getCurrentWave() <= 1 then
+                hasCountedMatchResult = false
+            end
+        end)
     end
 end)
-sendTelemetry()
-print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
+
+-- ดึงข้อมูลและส่งเข้าเว็บทุก 15 วินาที (หรือใช้ลิงก์โหลดบรรทัดเดียวด้านบนได้เลย!)`;
 
   return (
     <div className="relative min-h-screen bg-[#06060f] text-slate-100 selection:bg-cyan-500/30 selection:text-cyan-200 overflow-x-hidden">
@@ -640,7 +733,7 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
       </div>
 
       {/* ===================================================================
-          FLOATING TOAST NOTIFICATIONS (Gem Gain & Offline Alerts)
+          FLOATING TOAST NOTIFICATIONS (Gem Gain, Win Gain & Offline Alerts)
       =================================================================== */}
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2.5 max-w-sm w-[calc(100vw-2rem)] pointer-events-none">
         {toasts.map((t) => (
@@ -649,6 +742,8 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
             className={`pointer-events-auto flex items-start gap-3 rounded-2xl border p-4 backdrop-blur-xl shadow-2xl transition-all duration-300 ${
               t.type === "gem_gain"
                 ? "bg-emerald-950/85 border-emerald-400/50 text-emerald-100 shadow-emerald-500/20"
+                : t.type === "win_gain"
+                ? "bg-amber-950/90 border-amber-400/60 text-amber-100 shadow-amber-500/25"
                 : t.type === "offline"
                 ? "bg-rose-950/90 border-rose-500/60 text-rose-100 shadow-rose-500/25"
                 : t.type === "online"
@@ -659,6 +754,8 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
             <div className="text-lg leading-none mt-0.5">
               {t.type === "gem_gain"
                 ? "💎"
+                : t.type === "win_gain"
+                ? "🏆"
                 : t.type === "offline"
                 ? "🚨"
                 : t.type === "online"
@@ -677,7 +774,7 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
           MAIN CONTAINER
       =================================================================== */}
       <main className="relative z-10 mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 space-y-6">
-        {/* TOP BRANDING & QUICK SIMULATION BAR */}
+        {/* TOP BRANDING BAR */}
         <header className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between rounded-3xl border border-white/10 bg-slate-950/60 p-5 sm:p-6 backdrop-blur-2xl shadow-[0_0_50px_-12px_rgba(139,92,246,0.25)]">
           <div className="flex items-start sm:items-center gap-4">
             <div className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-500 via-purple-600 to-emerald-500 p-[1.5px] shadow-lg shadow-cyan-500/20">
@@ -693,66 +790,40 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="inline-flex items-center gap-1.5 rounded-full border border-cyan-400/30 bg-cyan-500/10 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-cyan-300">
-                  NEXUS TELEMETRY v2.4
+                  NEXUS TELEMETRY v2.5
                 </span>
                 <span className="inline-flex items-center gap-1 rounded-full border border-purple-400/30 bg-purple-500/10 px-2.5 py-0.5 text-[11px] font-medium text-purple-300">
                   Storage: {storageMode === "vercel-kv" ? "Vercel KV Redis" : "In-Memory Cache"}
+                </span>
+                <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-medium text-emerald-300">
+                  Timeout: {OFFLINE_TIMEOUT_SECONDS}s (Teleport Safe)
                 </span>
               </div>
               <h1 className="mt-1 text-xl sm:text-2xl md:text-3xl font-extrabold tracking-tight bg-gradient-to-r from-white via-cyan-200 to-purple-300 bg-clip-text text-transparent">
                 Roblox Multi-Account Farm Dashboard
               </h1>
               <p className="text-xs sm:text-sm text-slate-400 mt-0.5">
-                ระบบมอนิเตอร์บอทฟาร์มเรียลไทม์ เช็คเพชร ทอง เลเวล และสถานะออนไลน์จากทุกที่ทั่วโลก
+                ระบบมอนิเตอร์บอทฟาร์มเรียลไทม์ เช็คเพชร ทอง เลเวล สถิติชนะ/หลุด และสถานะออนไลน์ครบทุกจอ
               </p>
             </div>
           </div>
 
-          {/* Action / Simulator Buttons */}
+          {/* Action Button (Only Script Modal — Simulator Buttons Removed) */}
           <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => setShowLuauModal(true)}
-              className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/40 bg-cyan-500/15 px-3.5 py-2 text-xs sm:text-sm font-semibold text-cyan-200 hover:bg-cyan-500/25 hover:border-cyan-300 transition shadow-lg shadow-cyan-500/10"
+              className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/40 bg-cyan-500/15 px-4 py-2.5 text-xs sm:text-sm font-semibold text-cyan-200 hover:bg-cyan-500/25 hover:border-cyan-300 transition shadow-lg shadow-cyan-500/10"
             >
               <span>📜</span>
-              <span>รับสคริปต์ Luau</span>
-            </button>
-
-            <button
-              onClick={() => handleSimulatorAction("seed_demo")}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-purple-400/30 bg-purple-500/15 px-3 py-2 text-xs sm:text-sm font-semibold text-purple-200 hover:bg-purple-500/25 transition"
-              title="สร้างข้อมูลจำลอง 4 ไอดีเพื่อทดสอบระบบ"
-            >
-              <span>⚡</span>
-              <span>โหลดไอดีตัวอย่าง</span>
-            </button>
-
-            <button
-              onClick={() => handleSimulatorAction("simulate_gem_gain")}
-              disabled={enrichedAccounts.length === 0}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-400/30 bg-emerald-500/15 px-3 py-2 text-xs sm:text-sm font-semibold text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-40 transition"
-              title="จำลองเหตุการณ์เพชรเพิ่มขึ้นเพื่อดูเอฟเฟกต์สีเขียวและเสียงแจ้งเตือน"
-            >
-              <span>+💎</span>
-              <span className="hidden sm:inline">จำลองเพชรเข้า</span>
-            </button>
-
-            <button
-              onClick={() => handleSimulatorAction("simulate_disconnect")}
-              disabled={liveSummary.online_count === 0}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-rose-400/30 bg-rose-500/15 px-3 py-2 text-xs sm:text-sm font-semibold text-rose-200 hover:bg-rose-500/25 disabled:opacity-40 transition"
-              title="จำลองเหตุการณ์ไอดีหลุด (Offline) เพื่อทดสอบเสียงเตือน"
-            >
-              <span>🔴</span>
-              <span className="hidden sm:inline">จำลองจอหลุด</span>
+              <span>รับสคริปต์ Luau (v2.4)</span>
             </button>
           </div>
         </header>
 
         {/* ===================================================================
-            TOP SUMMARY HEADER BAR (4 Neon Glass Cards)
+            TOP SUMMARY HEADER BAR (5 Neon Glass Cards)
         =================================================================== */}
-        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           {/* 1. TOTAL COMBINED GEMS */}
           <div className="group relative overflow-hidden rounded-3xl border border-cyan-500/30 bg-gradient-to-br from-slate-900/90 via-slate-900/70 to-cyan-950/40 p-5 backdrop-blur-xl shadow-[0_0_35px_-10px_rgba(6,182,212,0.3)]">
             <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-cyan-500/15 blur-2xl group-hover:bg-cyan-400/25 transition" />
@@ -796,8 +867,8 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
             <div className="mt-3 flex items-baseline gap-2">
               <p className="text-2xl sm:text-3xl font-black tracking-tight text-white tabular-nums">
                 Online: {liveSummary.online_count}{" "}
-                <span className="text-lg font-semibold text-slate-400">
-                  / {liveSummary.total_accounts} Accounts
+                <span className="text-base font-semibold text-slate-400">
+                  / {liveSummary.total_accounts}
                 </span>
               </p>
             </div>
@@ -825,7 +896,44 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
             </div>
           </div>
 
-          {/* 3. TOTAL COMBINED GOLD */}
+          {/* 3. TOTAL WINS & DISCONNECTS */}
+          <div className="group relative overflow-hidden rounded-3xl border border-rose-500/25 bg-gradient-to-br from-slate-900/90 via-slate-900/70 to-indigo-950/45 p-5 backdrop-blur-xl shadow-[0_0_35px_-10px_rgba(244,63,94,0.25)]">
+            <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-amber-500/15 blur-2xl group-hover:bg-amber-400/25 transition" />
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wider text-amber-300/90">
+                Match Wins / Disconnects
+              </span>
+              <span className="flex h-10 w-10 items-center justify-center rounded-2xl border border-amber-400/30 bg-amber-500/15 text-xl">
+                🏆
+              </span>
+            </div>
+            <div className="mt-3 flex items-baseline justify-between gap-2">
+              <div>
+                <p className="text-2xl sm:text-3xl font-black tracking-tight text-emerald-300 tabular-nums">
+                  {formatNumber(liveSummary.total_wins)}{" "}
+                  <span className="text-xs font-bold uppercase text-emerald-400/80">
+                    Wins
+                  </span>
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-lg sm:text-xl font-black tracking-tight text-rose-400 tabular-nums">
+                  {formatNumber(liveSummary.total_disconnects)}{" "}
+                  <span className="text-xs font-bold uppercase text-rose-400/80">
+                    หลุด
+                  </span>
+                </p>
+              </div>
+            </div>
+            <p className="mt-2 text-xs text-slate-400 flex items-center justify-between">
+              <span>ชนะรวมทุกจอ</span>
+              <span className="font-mono text-rose-300">
+                หลุดรวม {formatNumber(liveSummary.total_disconnects)} ครั้ง
+              </span>
+            </p>
+          </div>
+
+          {/* 4. TOTAL COMBINED GOLD */}
           <div className="group relative overflow-hidden rounded-3xl border border-amber-500/30 bg-gradient-to-br from-slate-900/90 via-slate-900/70 to-amber-950/35 p-5 backdrop-blur-xl shadow-[0_0_35px_-10px_rgba(245,158,11,0.25)]">
             <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-amber-500/15 blur-2xl group-hover:bg-amber-400/25 transition" />
             <div className="flex items-center justify-between">
@@ -849,7 +957,7 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
             </p>
           </div>
 
-          {/* 4. TOTAL FARM TIME (UPTIME) */}
+          {/* 5. TOTAL FARM TIME (UPTIME) */}
           <div className="group relative overflow-hidden rounded-3xl border border-purple-500/30 bg-gradient-to-br from-slate-900/90 via-slate-900/70 to-purple-950/40 p-5 backdrop-blur-xl shadow-[0_0_35px_-10px_rgba(168,85,247,0.3)]">
             <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-purple-500/15 blur-2xl group-hover:bg-purple-400/25 transition" />
             <div className="flex items-center justify-between">
@@ -941,6 +1049,9 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
                   <option value="gems_desc" className="bg-slate-900 text-white">
                     💎 เพชรมากสุด (Gems)
                   </option>
+                  <option value="wins_desc" className="bg-slate-900 text-white">
+                    🏆 ชนะมากสุด (Wins)
+                  </option>
                   <option value="level_desc" className="bg-slate-900 text-white">
                     ⭐ เลเวลมากสุด (Level)
                   </option>
@@ -1008,7 +1119,7 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
                     pushToast(
                       "info",
                       "🔊 เปิดเสียงแจ้งเตือนแล้ว",
-                      "ระบบจะส่งเสียงเมื่อเพชรเพิ่มหรือไอดีหลุด Offline"
+                      "ระบบจะส่งเสียงเมื่อเพชร/ชนะเพิ่ม หรือเมื่อไอดีหลุด Offline"
                     );
                   }
                 }}
@@ -1081,20 +1192,14 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
             </h2>
             <p className="mx-auto max-w-xl text-sm text-slate-400">
               {accounts.length === 0
-                ? "คุณสามารถกดปุ่ม 'โหลดไอดีตัวอย่าง' เพื่อดูตัวอย่างการทำงานของแดชบอร์ด หรือคัดลอกสคริปต์ Luau ไปวางใน Roblox Executor เพื่อส่งข้อมูลเข้ามายัง /api/telemetry ได้ทันที"
+                ? "คัดลอกสคริปต์ Luau ไปวางใน Auto-Execute ของ Roblox Executor เพื่อส่งข้อมูลเพชร, ทอง, เลเวล และสถิติชนะ/หลุดเข้ามายังแดชบอร์ดอัตโนมัติ"
                 : "ลองเปลี่ยนคำค้นหาหรือตัวกรองสถานะ Online / Offline ด้านบน"}
             </p>
             {accounts.length === 0 && (
               <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
                 <button
-                  onClick={() => handleSimulatorAction("seed_demo")}
-                  className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-500 to-purple-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-cyan-500/25 hover:opacity-95 transition"
-                >
-                  <span>⚡ โหลดไอดีตัวอย่าง (4 จอ) ทันที</span>
-                </button>
-                <button
                   onClick={() => setShowLuauModal(true)}
-                  className="inline-flex items-center gap-2 rounded-2xl border border-white/15 bg-slate-900/80 px-5 py-3 text-sm font-bold text-slate-200 hover:bg-slate-800 transition"
+                  className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-500 to-purple-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-cyan-500/25 hover:opacity-95 transition"
                 >
                   <span>📜 ดูโค้ดสคริปต์ Luau สำหรับ Executor</span>
                 </button>
@@ -1107,12 +1212,14 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
               const isOnline = acc.effective_status === "ONLINE";
               const secondsAgo = acc.seconds_since_update ?? 0;
               const activeGemGain = gemFlashMap[acc.user_id] || 0;
+              const activeWinGain = winFlashMap[acc.user_id] || 0;
               const recentServerDelta =
                 nowTick - (acc.last_gem_gain_at || 0) <= 15
                   ? acc.gems_delta || 0
                   : 0;
               const displayedGemDelta = activeGemGain || recentServerDelta;
               const isGemFlashing = displayedGemDelta > 0;
+              const isWinFlashing = activeWinGain > 0;
 
               const pingColor =
                 acc.ping < 80
@@ -1125,7 +1232,7 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
                 <article
                   key={acc.user_id}
                   className={`group relative flex flex-col justify-between overflow-hidden rounded-3xl border p-5 sm:p-6 backdrop-blur-2xl transition-all duration-300 ${
-                    isGemFlashing
+                    isGemFlashing || isWinFlashing
                       ? "border-emerald-400/80 bg-slate-900/85 shadow-[0_0_40px_-5px_rgba(16,185,129,0.5)] animate-gem-flash"
                       : isOnline
                       ? "border-white/10 bg-slate-900/65 hover:border-cyan-400/50 hover:shadow-[0_0_35px_-10px_rgba(6,182,212,0.3)]"
@@ -1135,7 +1242,7 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
                   {/* Top Neon Accent Line */}
                   <div
                     className={`absolute inset-x-0 top-0 h-1 ${
-                      isGemFlashing
+                      isGemFlashing || isWinFlashing
                         ? "bg-gradient-to-r from-emerald-400 via-cyan-300 to-emerald-400"
                         : isOnline
                         ? "bg-gradient-to-r from-cyan-500 via-purple-500 to-emerald-400"
@@ -1178,7 +1285,7 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
                             title={
                               isOnline
                                 ? "ONLINE - กำลังฟาร์ม"
-                                : "OFFLINE - ขาดการติดต่อเกิน 60 วินาที"
+                                : `OFFLINE - ขาดการติดต่อเกิน ${OFFLINE_TIMEOUT_SECONDS} วินาที`
                             }
                           >
                             {isOnline && (
@@ -1283,8 +1390,48 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
                       </div>
                     </div>
 
-                    {/* GOLD & EXTRA STATS ROW */}
+                    {/* WINS & DISCONNECTS STATS ROW */}
                     <div className="mt-3 grid grid-cols-2 gap-2.5">
+                      <div
+                        className={`rounded-2xl border px-3.5 py-2.5 transition-all ${
+                          isWinFlashing
+                            ? "border-emerald-400 bg-emerald-950/80 shadow-[0_0_20px_rgba(16,185,129,0.35)]"
+                            : "border-emerald-500/25 bg-emerald-950/25"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-bold text-emerald-300 flex items-center gap-1">
+                            <span>🏆</span> ชนะด่าน (Wins)
+                          </span>
+                          {activeWinGain > 0 && (
+                            <span className="rounded-full bg-emerald-500/30 px-1.5 py-0.2 text-[10px] font-black text-emerald-200 animate-bounce">
+                              +{activeWinGain}
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-0.5 text-base sm:text-lg font-black text-emerald-200 tabular-nums">
+                          {formatNumber(acc.wins || 0)}{" "}
+                          <span className="text-xs font-semibold text-emerald-400/80">
+                            ครั้ง
+                          </span>
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-rose-500/25 bg-rose-950/20 px-3.5 py-2.5">
+                        <span className="text-[11px] font-bold text-rose-300 flex items-center gap-1">
+                          <span>🔌</span> หลุดเกม (Disconnects)
+                        </span>
+                        <p className="mt-0.5 text-base sm:text-lg font-black text-rose-200 tabular-nums">
+                          {formatNumber(acc.disconnects || 0)}{" "}
+                          <span className="text-xs font-semibold text-rose-400/80">
+                            ครั้ง
+                          </span>
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* GOLD & EXTRA STATS ROW */}
+                    <div className="mt-2.5 grid grid-cols-2 gap-2.5">
                       <div className="rounded-2xl border border-white/10 bg-slate-950/60 px-3.5 py-2.5">
                         <span className="text-[11px] font-semibold text-amber-300/90 flex items-center gap-1">
                           <span>🪙</span> Gold
@@ -1379,7 +1526,7 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
       </main>
 
       {/* ===================================================================
-          MODAL: LUAU EXECUTOR SCRIPT & API PAYLOAD SPEC
+          MODAL: LUAU EXECUTOR SCRIPT & ONE-LINER LOADSTRING
       =================================================================== */}
       {showLuauModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md">
@@ -1387,11 +1534,11 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
             <div className="flex items-center justify-between border-b border-white/10 px-6 py-4">
               <div>
                 <h3 className="text-lg font-extrabold text-white">
-                  📜 สคริปต์ Luau สำหรับใส่ใน Roblox Executor
+                  📜 สคริปต์ Luau (v2.4) สำหรับใส่ใน Roblox Executor
                 </h3>
                 <p className="text-xs text-slate-400">
-                  ส่งข้อมูล JSON Telemetry เข้าสู่{" "}
-                  <code className="text-cyan-300">{endpointUrl}</code> อัตโนมัติ
+                  รองรับเช็คชนะด่าน (ResultsUI), นับจำนวนครั้งที่หลุด, และ Timeout 120 วินาทีส่งเข้า{" "}
+                  <code className="text-cyan-300">{endpointUrl}</code>
                 </p>
               </div>
               <button
@@ -1402,24 +1549,47 @@ print("[FarmDashboard] Telemetry Connected -> " .. API_URL)`;
               </button>
             </div>
 
-            <div className="overflow-y-auto p-6 space-y-4">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-wider text-cyan-300">
-                  TelemetrySender.luau (วางในโฟลเดอร์ autoexec)
-                </span>
-                <button
-                  onClick={() => handleCopy(sampleLuauScript, "luau-script")}
-                  className="rounded-xl bg-cyan-500/20 border border-cyan-400/40 px-3.5 py-1.5 text-xs font-bold text-cyan-200 hover:bg-cyan-500/30 transition"
-                >
-                  {copiedText === "luau-script"
-                    ? "✓ คัดลอกโค้ดแล้ว!"
-                    : "📋 คัดลอกสคริปต์ Luau"}
-                </button>
+            <div className="overflow-y-auto p-6 space-y-5">
+              {/* 1-Line Loadstring Recommended Box */}
+              <div className="rounded-2xl border border-emerald-500/35 bg-emerald-950/25 p-4 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold uppercase tracking-wider text-emerald-300">
+                    ⚡ แนะนำ: โค้ดบรรทัดเดียว (ดึงอัปเดตอัตโนมัติผ่าน CDN)
+                  </span>
+                  <button
+                    onClick={() => handleCopy(oneLinerLoadstring, "luau-oneliner")}
+                    className="rounded-xl bg-emerald-500/20 border border-emerald-400/40 px-3.5 py-1.5 text-xs font-bold text-emerald-200 hover:bg-emerald-500/30 transition"
+                  >
+                    {copiedText === "luau-oneliner"
+                      ? "✓ คัดลอก Loadstring แล้ว!"
+                      : "📋 คัดลอกบรรทัดเดียว"}
+                  </button>
+                </div>
+                <pre className="overflow-x-auto rounded-xl border border-white/10 bg-slate-950 p-3 text-xs font-mono text-emerald-300">
+                  <code>{oneLinerLoadstring}</code>
+                </pre>
               </div>
 
-              <pre className="overflow-x-auto rounded-2xl border border-white/10 bg-slate-950 p-4 text-xs font-mono text-emerald-300 leading-relaxed">
-                <code>{sampleLuauScript}</code>
-              </pre>
+              {/* Full Source Code Box */}
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-cyan-300">
+                    โค้ดเต็ม tracker.lua v2.4 (วางในโฟลเดอร์ Autoexecute)
+                  </span>
+                  <button
+                    onClick={() => handleCopy(sampleLuauScript, "luau-script")}
+                    className="rounded-xl bg-cyan-500/20 border border-cyan-400/40 px-3.5 py-1.5 text-xs font-bold text-cyan-200 hover:bg-cyan-500/30 transition"
+                  >
+                    {copiedText === "luau-script"
+                      ? "✓ คัดลอกโค้ดเต็มแล้ว!"
+                      : "📋 คัดลอกโค้ดเต็ม"}
+                  </button>
+                </div>
+
+                <pre className="overflow-x-auto rounded-2xl border border-white/10 bg-slate-950 p-4 text-xs font-mono text-cyan-200 leading-relaxed max-h-96">
+                  <code>{sampleLuauScript}</code>
+                </pre>
+              </div>
             </div>
           </div>
         </div>
