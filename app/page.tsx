@@ -413,6 +413,16 @@ export default function RobloxFarmDashboardPage() {
 
         const incoming = data.accounts || [];
         const incomingIds = new Set(incoming.map((a) => a.user_id));
+        const onlineIds = new Set<number>();
+
+        incoming.forEach((acc) => {
+          const isNowOnline =
+            acc.effective_status === "ONLINE" &&
+            computeIsOnline(acc, currentSec);
+          if (isNowOnline) {
+            onlineIds.add(acc.user_id);
+          }
+        });
 
         // หากมีไอดีไหนหายไปจากเซิร์ฟเวอร์เอง และตั้งค่าเก็บลง Log ไว้ (default = true) ให้เซฟเข้า Log อัตโนมัติทันทีก่อนหาย
         prevAccountObjectsRef.current.forEach((prevAcc, uid) => {
@@ -424,23 +434,31 @@ export default function RobloxFarmDashboardPage() {
           }
         });
 
-        // Merge server logs with browser localStorage logs
-        if (Array.isArray(data.logs) && data.logs.length > 0) {
-          persistLogEntries((prev) => {
-            const map = new Map<number, AccountLogEntry>();
-            prev.forEach((item) => map.set(item.user_id, item));
-            data.logs!.forEach((srvItem) => {
+        // Merge server logs with browser localStorage logs & ลบไอดีที่กลับมา ONLINE ออกจาก Log ทันที
+        persistLogEntries((prev) => {
+          const map = new Map<number, AccountLogEntry>();
+          prev.forEach((item) => {
+            if (!onlineIds.has(item.user_id)) {
+              map.set(item.user_id, item);
+            }
+          });
+          if (Array.isArray(data.logs)) {
+            data.logs.forEach((srvItem) => {
+              if (onlineIds.has(srvItem.user_id)) return;
               if (saveToLogPrefsRef.current[srvItem.user_id] === false) return;
               const existing = map.get(srvItem.user_id);
-              if (!existing || (srvItem.logged_at || 0) >= (existing.logged_at || 0)) {
+              if (
+                !existing ||
+                (srvItem.logged_at || 0) >= (existing.logged_at || 0)
+              ) {
                 map.set(srvItem.user_id, srvItem);
               }
             });
-            return Array.from(map.values()).sort(
-              (a, b) => (b.logged_at || 0) - (a.logged_at || 0)
-            );
-          });
-        }
+          }
+          return Array.from(map.values()).sort(
+            (a, b) => (b.logged_at || 0) - (a.logged_at || 0)
+          );
+        });
 
         const newFlashEntries: Record<number, number> = {};
         const newWinFlashEntries: Record<number, number> = {};
@@ -856,9 +874,23 @@ export default function RobloxFarmDashboardPage() {
     });
   }, [enrichedAccounts, searchQuery, statusFilter, sortBy]);
 
-  // Compute Log Summary & Filtered Logs
+  // Compute Log Summary & Filtered Logs (กรองไอดีที่กำลัง ONLINE ออกจาก Log เสมอ)
+  const activeOnlineUserIds = useMemo(() => {
+    const set = new Set<number>();
+    enrichedAccounts.forEach((acc) => {
+      if (acc.effective_status === "ONLINE") {
+        set.add(acc.user_id);
+      }
+    });
+    return set;
+  }, [enrichedAccounts]);
+
+  const visibleLogEntries = useMemo(() => {
+    return logEntries.filter((item) => !activeOnlineUserIds.has(item.user_id));
+  }, [logEntries, activeOnlineUserIds]);
+
   const logSummary = useMemo(() => {
-    return logEntries.reduce(
+    return visibleLogEntries.reduce(
       (acc, item) => {
         acc.total_gems += item.gems || 0;
         acc.total_april_coins += item.april_coins || 0;
@@ -866,17 +898,17 @@ export default function RobloxFarmDashboardPage() {
         return acc;
       },
       {
-        total_logs: logEntries.length,
+        total_logs: visibleLogEntries.length,
         total_gems: 0,
         total_april_coins: 0,
         total_gold: 0,
       }
     );
-  }, [logEntries]);
+  }, [visibleLogEntries]);
 
   const filteredLogs = useMemo(() => {
     const q = logSearchQuery.trim().toLowerCase();
-    const list = logEntries.filter((entry) => {
+    const list = visibleLogEntries.filter((entry) => {
       if (!q) return true;
       return (
         entry.username?.toLowerCase().includes(q) ||
@@ -894,7 +926,7 @@ export default function RobloxFarmDashboardPage() {
       if (logSortBy === "gold_desc") return (b.gold || 0) - (a.gold || 0);
       return (b.logged_at || 0) - (a.logged_at || 0);
     });
-  }, [logEntries, logSearchQuery, logSortBy]);
+  }, [visibleLogEntries, logSearchQuery, logSortBy]);
 
   const formatLogExportText = useCallback(() => {
     if (filteredLogs.length === 0) return "";
@@ -1200,7 +1232,7 @@ end)
               className="inline-flex items-center gap-2 rounded-xl border border-amber-400/45 bg-amber-500/15 px-4 py-2.5 text-xs sm:text-sm font-bold text-amber-200 hover:bg-amber-500/25 hover:border-amber-300 transition shadow-lg shadow-amber-500/15"
             >
               <span>📋</span>
-              <span>ประวัติ Log ({logEntries.length})</span>
+              <span>ประวัติ Log ({visibleLogEntries.length})</span>
             </button>
 
             <button
@@ -2076,14 +2108,14 @@ end)
               <div>
                 <h3 className="text-lg sm:text-xl font-extrabold text-white flex items-center gap-2">
                   <span>📋</span>
-                  <span>ประวัติ Log ไอดีที่ถูกเก็บไว้ ({logEntries.length} ไอดี)</span>
+                  <span>ประวัติ Log ไอดีที่ถูกเก็บไว้ ({visibleLogEntries.length} ไอดี)</span>
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
                   ไอดีที่เปิด{" "}
                   <span className="text-amber-300 font-semibold">
                     &ldquo;📥 เก็บลง Log&rdquo;
                   </span>{" "}
-                  (ค่าเริ่มต้น) จะถูกบันทึก ชื่อ, เพชร, April Fool, เลเวล และ Gold อัตโนมัติก่อนถูกลบออกจากหน้าเว็บ
+                  (ค่าเริ่มต้น) จะถูกบันทึกอัตโนมัติก่อนถูกลบออกจากหน้าเว็บ และหากไอดีกลับมาออนไลน์จะถูกลบออกจาก Log อัตโนมัติ
                 </p>
               </div>
 

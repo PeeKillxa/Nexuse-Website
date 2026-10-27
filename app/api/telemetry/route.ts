@@ -432,6 +432,12 @@ async function upsertAccountTelemetry(
   };
 
   await saveStoredAccount(record);
+
+  // หากไอดีนี้กลับมาออนไลน์แล้ว ให้ลบออกจาก Log ทันที
+  if (incomingStatus !== "OFFLINE") {
+    await deleteAccountLogEntry(String(userId));
+  }
+
   return record;
 }
 
@@ -467,9 +473,11 @@ export async function GET() {
   try {
     const nowSec = Math.floor(Date.now() / 1000);
     const rawAccounts = await getAllStoredAccounts();
-    const logs = await getAllAccountLogs();
+    const rawLogs = await getAllAccountLogs();
+    const logIdSet = new Set(rawLogs.map((l) => l.user_id));
 
     const accounts: AccountWithComputedStatus[] = [];
+    const onlineUserIds = new Set<number>();
 
     for (const acc of rawAccounts) {
       const referenceTime = acc.server_updated_at || acc.updated_at || nowSec;
@@ -487,7 +495,12 @@ export async function GET() {
       const aprilCoins = acc.april_coins ?? 0;
       const saveToLog = acc.save_to_log !== undefined ? acc.save_to_log : true;
 
-      if (effectiveStatus === "OFFLINE" && !countedOffline) {
+      if (effectiveStatus === "ONLINE") {
+        onlineUserIds.add(acc.user_id);
+        if (logIdSet.has(acc.user_id)) {
+          await deleteAccountLogEntry(String(acc.user_id));
+        }
+      } else if (effectiveStatus === "OFFLINE" && !countedOffline) {
         disconnects += 1;
         countedOffline = true;
         const updatedRecord: StoredAccount = {
@@ -512,6 +525,8 @@ export async function GET() {
         seconds_since_update: secondsSinceUpdate,
       });
     }
+
+    const logs = rawLogs.filter((l) => !onlineUserIds.has(l.user_id));
 
     // Compute Global Summary Statistics
     const summary = accounts.reduce(
