@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import Link from "next/link";
 
 // ============================================================================
 // TYPES & INTERFACES
@@ -1184,8 +1185,16 @@ end)
             </div>
           </div>
 
-          {/* Action Buttons: Log Modal + Script Modal */}
+          {/* Action Buttons: Finance Page + Log Modal + Script Modal */}
           <div className="flex flex-wrap items-center gap-2.5">
+            <Link
+              href="/finance"
+              className="inline-flex items-center gap-2 rounded-xl border border-emerald-400/45 bg-emerald-500/15 px-4 py-2.5 text-xs sm:text-sm font-bold text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-300 transition shadow-lg shadow-emerald-500/15"
+            >
+              <span>💰</span>
+              <span>จัดการการเงิน (หาร 2)</span>
+            </Link>
+
             <button
               onClick={() => setShowLogModal(true)}
               className="inline-flex items-center gap-2 rounded-xl border border-amber-400/45 bg-amber-500/15 px-4 py-2.5 text-xs sm:text-sm font-bold text-amber-200 hover:bg-amber-500/25 hover:border-amber-300 transition shadow-lg shadow-amber-500/15"
