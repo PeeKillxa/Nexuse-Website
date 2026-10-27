@@ -23,6 +23,7 @@ interface AccountTelemetry {
   april_coins: number;
   wins: number;
   disconnects: number;
+  save_to_log?: boolean;
   extra_stats: Record<string, number | string | boolean>;
   ping: number;
   fps: number;
@@ -33,6 +34,22 @@ interface AccountTelemetry {
   previous_gems?: number;
   gems_delta?: number;
   last_gem_gain_at?: number;
+}
+
+interface AccountLogEntry {
+  user_id: number;
+  username: string;
+  display_name: string;
+  avatar_url: string;
+  level: number;
+  gems: number;
+  april_coins: number;
+  gold: number;
+  wins: number;
+  disconnects: number;
+  game_name: string;
+  logged_at: number;
+  reason?: string;
 }
 
 interface TelemetryResponse {
@@ -52,6 +69,7 @@ interface TelemetryResponse {
     total_uptime_seconds: number;
   };
   accounts: AccountTelemetry[];
+  logs?: AccountLogEntry[];
 }
 
 interface ToastAlert {
@@ -230,6 +248,19 @@ export default function RobloxFarmDashboardPage() {
   const [sessionGemGain, setSessionGemGain] = useState<number>(0);
   const [toasts, setToasts] = useState<ToastAlert[]>([]);
   const [showLuauModal, setShowLuauModal] = useState<boolean>(false);
+  const [showLogModal, setShowLogModal] = useState<boolean>(false);
+  const [logEntries, setLogEntries] = useState<AccountLogEntry[]>([]);
+  const [saveToLogPrefs, setSaveToLogPrefs] = useState<Record<number, boolean>>(
+    {}
+  );
+  const [logSearchQuery, setLogSearchQuery] = useState<string>("");
+  const [logSortBy, setLogSortBy] = useState<
+    | "logged_at_desc"
+    | "gems_desc"
+    | "april_coins_desc"
+    | "level_desc"
+    | "gold_desc"
+  >("logged_at_desc");
   const [copiedText, setCopiedText] = useState<string | null>(null);
   const [nowTick, setNowTick] = useState<number>(() =>
     Math.floor(Date.now() / 1000)
@@ -239,12 +270,91 @@ export default function RobloxFarmDashboardPage() {
   const prevAccountsRef = useRef<
     Map<number, { gems: number; wins: number; isOnline: boolean }>
   >(new Map());
+  const prevAccountObjectsRef = useRef<Map<number, AccountTelemetry>>(
+    new Map()
+  );
+  const saveToLogPrefsRef = useRef<Record<number, boolean>>({});
   const isFirstFetchRef = useRef<boolean>(true);
   const audioEngineRef = useRef<CyberAudioEngine | null>(null);
 
   useEffect(() => {
     audioEngineRef.current = new CyberAudioEngine();
+    // Load saved logs & preferences from browser localStorage
+    try {
+      const rawLogs = localStorage.getItem("nexus_account_logs_v1");
+      if (rawLogs) {
+        const parsed = JSON.parse(rawLogs) as AccountLogEntry[];
+        if (Array.isArray(parsed)) {
+          setLogEntries(parsed);
+        }
+      }
+      const rawPrefs = localStorage.getItem("nexus_save_to_log_prefs_v1");
+      if (rawPrefs) {
+        const parsedPrefs = JSON.parse(rawPrefs) as Record<number, boolean>;
+        if (parsedPrefs && typeof parsedPrefs === "object") {
+          setSaveToLogPrefs(parsedPrefs);
+          saveToLogPrefsRef.current = parsedPrefs;
+        }
+      }
+    } catch {
+      // ignore localStorage errors
+    }
   }, []);
+
+  const persistLogEntries = useCallback(
+    (updater: (prev: AccountLogEntry[]) => AccountLogEntry[]) => {
+      setLogEntries((prev) => {
+        const next = updater(prev);
+        try {
+          localStorage.setItem("nexus_account_logs_v1", JSON.stringify(next));
+        } catch {
+          // ignore
+        }
+        return next;
+      });
+    },
+    []
+  );
+
+  const isAccountSaveToLogEnabled = useCallback(
+    (userId: number, serverFlag?: boolean): boolean => {
+      if (saveToLogPrefsRef.current[userId] !== undefined) {
+        return saveToLogPrefsRef.current[userId];
+      }
+      if (serverFlag !== undefined) {
+        return serverFlag;
+      }
+      return true; // Default คือ เก็บลง Log เสมอ
+    },
+    []
+  );
+
+  const recordAccountToLocalLog = useCallback(
+    (acc: AccountTelemetry, reason = "บันทึกก่อนลบออกจากหน้าเว็บ") => {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const entry: AccountLogEntry = {
+        user_id: acc.user_id,
+        username: acc.username,
+        display_name: acc.display_name || acc.username,
+        avatar_url: acc.avatar_url || "",
+        level: acc.level || 1,
+        gems: acc.gems || 0,
+        april_coins:
+          acc.april_coins || Number(acc.extra_stats?.april_coins || 0) || 0,
+        gold: acc.gold || 0,
+        wins: acc.wins || 0,
+        disconnects: acc.disconnects || 0,
+        game_name: acc.game_name || "Anime Adventures",
+        logged_at: nowSec,
+        reason,
+      };
+      persistLogEntries((prev) => {
+        const filtered = prev.filter((item) => item.user_id !== acc.user_id);
+        return [entry, ...filtered];
+      });
+    },
+    [persistLogEntries]
+  );
 
   // Tick every 1s to keep relative timestamps and 120s heartbeat timeout live
   useEffect(() => {
@@ -301,6 +411,36 @@ export default function RobloxFarmDashboardPage() {
         setStorageMode(data.storage_mode || "in-memory");
 
         const incoming = data.accounts || [];
+        const incomingIds = new Set(incoming.map((a) => a.user_id));
+
+        // หากมีไอดีไหนหายไปจากเซิร์ฟเวอร์เอง และตั้งค่าเก็บลง Log ไว้ (default = true) ให้เซฟเข้า Log อัตโนมัติทันทีก่อนหาย
+        prevAccountObjectsRef.current.forEach((prevAcc, uid) => {
+          if (
+            !incomingIds.has(uid) &&
+            isAccountSaveToLogEnabled(uid, prevAcc.save_to_log)
+          ) {
+            recordAccountToLocalLog(prevAcc, "บันทึกอัตโนมัติก่อนออกจากหน้าเว็บ");
+          }
+        });
+
+        // Merge server logs with browser localStorage logs
+        if (Array.isArray(data.logs) && data.logs.length > 0) {
+          persistLogEntries((prev) => {
+            const map = new Map<number, AccountLogEntry>();
+            prev.forEach((item) => map.set(item.user_id, item));
+            data.logs!.forEach((srvItem) => {
+              if (saveToLogPrefsRef.current[srvItem.user_id] === false) return;
+              const existing = map.get(srvItem.user_id);
+              if (!existing || (srvItem.logged_at || 0) >= (existing.logged_at || 0)) {
+                map.set(srvItem.user_id, srvItem);
+              }
+            });
+            return Array.from(map.values()).sort(
+              (a, b) => (b.logged_at || 0) - (a.logged_at || 0)
+            );
+          });
+        }
+
         const newFlashEntries: Record<number, number> = {};
         const newWinFlashEntries: Record<number, number> = {};
         let totalNewGemsThisPoll = 0;
@@ -308,6 +448,7 @@ export default function RobloxFarmDashboardPage() {
         let shouldPlayOfflineSound = false;
 
         incoming.forEach((acc) => {
+          prevAccountObjectsRef.current.set(acc.user_id, acc);
           const isNowOnline =
             acc.effective_status === "ONLINE" &&
             computeIsOnline(acc, currentSec);
@@ -412,7 +553,15 @@ export default function RobloxFarmDashboardPage() {
         setCountdown(refreshIntervalSec);
       }
     },
-    [audioEnabled, computeIsOnline, pushToast, refreshIntervalSec]
+    [
+      audioEnabled,
+      computeIsOnline,
+      isAccountSaveToLogEnabled,
+      persistLogEntries,
+      pushToast,
+      recordAccountToLocalLog,
+      refreshIntervalSec,
+    ]
   );
 
   // Initial Fetch
@@ -438,17 +587,168 @@ export default function RobloxFarmDashboardPage() {
     return () => clearInterval(countdownInterval);
   }, [autoRefresh, refreshIntervalSec, fetchTelemetry]);
 
+  // Toggle whether an account should be saved to Log before removal (Default = true)
+  const handleToggleSaveToLog = async (
+    userId: number,
+    username: string,
+    currentVal: boolean
+  ) => {
+    const nextVal = !currentVal;
+    const updatedPrefs = {
+      ...saveToLogPrefsRef.current,
+      [userId]: nextVal,
+    };
+    saveToLogPrefsRef.current = updatedPrefs;
+    setSaveToLogPrefs(updatedPrefs);
+    try {
+      localStorage.setItem(
+        "nexus_save_to_log_prefs_v1",
+        JSON.stringify(updatedPrefs)
+      );
+    } catch {
+      // ignore
+    }
+
+    if (!nextVal) {
+      // ลบออกจาก Log ด้วยหากตั้งค่าไม่ให้เก็บไอดีนี้
+      persistLogEntries((prev) =>
+        prev.filter((item) => item.user_id !== userId)
+      );
+      pushToast(
+        "info",
+        "🚫 ปิดการเก็บลง Log",
+        `ตั้งค่าไม่เก็บ @${username} ลงใน Log เมื่อลบการ์ด`
+      );
+    } else {
+      pushToast(
+        "info",
+        "📋 เปิดการเก็บลง Log",
+        `ระบบจะบันทึกข้อมูล @${username} ลง Log ก่อนลบออกจากหน้าเว็บ`
+      );
+    }
+
+    try {
+      await fetch("/api/telemetry", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "toggle_save_to_log",
+          user_id: userId,
+          save_to_log: nextVal,
+        }),
+      });
+    } catch {
+      // ignore
+    }
+  };
+
   const handleDeleteAccount = async (userId: number, username: string) => {
-    await fetch(`/api/telemetry?user_id=${userId}`, { method: "DELETE" });
+    const targetAcc =
+      accounts.find((a) => a.user_id === userId) ||
+      prevAccountObjectsRef.current.get(userId);
+    const shouldSaveLog = isAccountSaveToLogEnabled(
+      userId,
+      targetAcc?.save_to_log
+    );
+
+    if (targetAcc && shouldSaveLog) {
+      recordAccountToLocalLog(targetAcc, "ลบการ์ดออกจากหน้าเว็บ");
+    }
+    prevAccountObjectsRef.current.delete(userId);
     prevAccountsRef.current.delete(userId);
-    pushToast("info", "ลบรายการสำเร็จ", `ลบ @${username} ออกจากแดชบอร์ดแล้ว`);
+
+    await fetch(
+      `/api/telemetry?user_id=${userId}${shouldSaveLog ? "" : "&skip_log=1"}`,
+      { method: "DELETE" }
+    );
+    pushToast(
+      "info",
+      shouldSaveLog ? "📋 บันทึกลง Log & ลบการ์ดแล้ว" : "🗑️ ลบการ์ดสำเร็จ",
+      shouldSaveLog
+        ? `เก็บข้อมูล @${username} ลงใน Log เรียบร้อยก่อนลบ`
+        : `ลบ @${username} โดยไม่เก็บลง Log`
+    );
     await fetchTelemetry(true);
   };
 
   const handleClearOffline = async () => {
+    let savedCount = 0;
+    enrichedAccounts.forEach((acc) => {
+      if (acc.effective_status === "OFFLINE") {
+        const shouldSave = isAccountSaveToLogEnabled(
+          acc.user_id,
+          acc.save_to_log
+        );
+        if (shouldSave) {
+          recordAccountToLocalLog(acc, "ล้างจอ Offline");
+          savedCount++;
+        }
+        prevAccountObjectsRef.current.delete(acc.user_id);
+        prevAccountsRef.current.delete(acc.user_id);
+      }
+    });
+
     await fetch(`/api/telemetry?mode=offline`, { method: "DELETE" });
-    pushToast("info", "ล้างไอดี Offline แล้ว", "ลบรายการไอดีที่หลุดออกทั้งหมด");
+    pushToast(
+      "info",
+      "📋 ล้างไอดี Offline เรียบร้อย",
+      savedCount > 0
+        ? `บันทึกข้อมูลลง Log ${savedCount} ไอดีก่อนลบออกจากหน้าเว็บ`
+        : "ลบรายการไอดีที่หลุดออกทั้งหมดแล้ว"
+    );
     await fetchTelemetry(true);
+  };
+
+  const handleSnapshotAllToLog = async () => {
+    let count = 0;
+    enrichedAccounts.forEach((acc) => {
+      if (isAccountSaveToLogEnabled(acc.user_id, acc.save_to_log)) {
+        recordAccountToLocalLog(acc, "กดบันทึกเข้า Log");
+        count++;
+      }
+    });
+    try {
+      await fetch("/api/telemetry", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "snapshot_to_log" }),
+      });
+    } catch {
+      // ignore
+    }
+    pushToast(
+      "info",
+      "📥 บันทึกเข้า Log สำเร็จ",
+      `อัปเดตข้อมูล ${count} ไอดีที่ตั้งค่าเก็บลง Log เรียบร้อย`
+    );
+  };
+
+  const handleDeleteLogEntry = async (userId: number, username: string) => {
+    persistLogEntries((prev) => prev.filter((item) => item.user_id !== userId));
+    try {
+      await fetch("/api/telemetry", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete_log_entry", user_id: userId }),
+      });
+    } catch {
+      // ignore
+    }
+    pushToast("info", "ลบออกจาก Log แล้ว", `ลบ @${username} ออกจากประวัติ Log`);
+  };
+
+  const handleClearAllLogs = async () => {
+    persistLogEntries(() => []);
+    try {
+      await fetch("/api/telemetry", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "clear_logs" }),
+      });
+    } catch {
+      // ignore
+    }
+    pushToast("info", "ล้างประวัติ Log ทั้งหมดแล้ว", "ข้อมูลใน Log ถูกล้างเรียบร้อย");
   };
 
   const handleCopy = (text: string, label: string) => {
@@ -468,18 +768,25 @@ export default function RobloxFarmDashboardPage() {
       const isOnline = !isExplicitOffline && !isTimedOut;
       const aprilCoins =
         acc.april_coins || Number(acc.extra_stats?.april_coins || 0) || 0;
+      const saveToLog =
+        saveToLogPrefs[acc.user_id] !== undefined
+          ? saveToLogPrefs[acc.user_id]
+          : acc.save_to_log !== undefined
+          ? acc.save_to_log
+          : true;
       return {
         ...acc,
         april_coins: aprilCoins,
         wins: acc.wins || 0,
         disconnects: acc.disconnects || 0,
+        save_to_log: saveToLog,
         effective_status: (isOnline ? "ONLINE" : "OFFLINE") as
           | "ONLINE"
           | "OFFLINE",
         seconds_since_update: secondsSinceUpdate,
       };
     });
-  }, [accounts, nowTick]);
+  }, [accounts, nowTick, saveToLogPrefs]);
 
   // Compute Live Summary Metrics
   const liveSummary = useMemo(() => {
@@ -547,6 +854,60 @@ export default function RobloxFarmDashboardPage() {
       return 0;
     });
   }, [enrichedAccounts, searchQuery, statusFilter, sortBy]);
+
+  // Compute Log Summary & Filtered Logs
+  const logSummary = useMemo(() => {
+    return logEntries.reduce(
+      (acc, item) => {
+        acc.total_gems += item.gems || 0;
+        acc.total_april_coins += item.april_coins || 0;
+        acc.total_gold += item.gold || 0;
+        return acc;
+      },
+      {
+        total_logs: logEntries.length,
+        total_gems: 0,
+        total_april_coins: 0,
+        total_gold: 0,
+      }
+    );
+  }, [logEntries]);
+
+  const filteredLogs = useMemo(() => {
+    const q = logSearchQuery.trim().toLowerCase();
+    const list = logEntries.filter((entry) => {
+      if (!q) return true;
+      return (
+        entry.username?.toLowerCase().includes(q) ||
+        entry.display_name?.toLowerCase().includes(q) ||
+        String(entry.user_id).includes(q) ||
+        entry.reason?.toLowerCase().includes(q)
+      );
+    });
+
+    return list.sort((a, b) => {
+      if (logSortBy === "gems_desc") return (b.gems || 0) - (a.gems || 0);
+      if (logSortBy === "april_coins_desc")
+        return (b.april_coins || 0) - (a.april_coins || 0);
+      if (logSortBy === "level_desc") return (b.level || 0) - (a.level || 0);
+      if (logSortBy === "gold_desc") return (b.gold || 0) - (a.gold || 0);
+      return (b.logged_at || 0) - (a.logged_at || 0);
+    });
+  }, [logEntries, logSearchQuery, logSortBy]);
+
+  const formatLogExportText = useCallback(() => {
+    if (filteredLogs.length === 0) return "";
+    return filteredLogs
+      .map(
+        (item, idx) =>
+          `${idx + 1}. ${item.username} | 💎 Gems: ${formatNumber(
+            item.gems
+          )} | 🌸 April Fool: ${formatNumber(
+            item.april_coins || 0
+          )} | ⭐ Lv.${item.level} | 🪙 Gold: ${formatNumber(item.gold)}`
+      )
+      .join("\n");
+  }, [filteredLogs]);
 
   const endpointUrl =
     typeof window !== "undefined"
@@ -823,14 +1184,22 @@ end)
             </div>
           </div>
 
-          {/* Action Button (Only Script Modal — Simulator Buttons Removed) */}
-          <div className="flex flex-wrap items-center gap-2">
+          {/* Action Buttons: Log Modal + Script Modal */}
+          <div className="flex flex-wrap items-center gap-2.5">
+            <button
+              onClick={() => setShowLogModal(true)}
+              className="inline-flex items-center gap-2 rounded-xl border border-amber-400/45 bg-amber-500/15 px-4 py-2.5 text-xs sm:text-sm font-bold text-amber-200 hover:bg-amber-500/25 hover:border-amber-300 transition shadow-lg shadow-amber-500/15"
+            >
+              <span>📋</span>
+              <span>ประวัติ Log ({logEntries.length})</span>
+            </button>
+
             <button
               onClick={() => setShowLuauModal(true)}
               className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/40 bg-cyan-500/15 px-4 py-2.5 text-xs sm:text-sm font-semibold text-cyan-200 hover:bg-cyan-500/25 hover:border-cyan-300 transition shadow-lg shadow-cyan-500/10"
             >
               <span>📜</span>
-              <span>รับสคริปต์ Luau (v2.4)</span>
+              <span>รับสคริปต์ Luau (v2.5)</span>
             </button>
           </div>
         </header>
@@ -1377,7 +1746,7 @@ end)
                         </div>
                       </div>
 
-                      {/* Level Badge & Delete Button */}
+                      {/* Level Badge, Log Save Toggle & Delete Button */}
                       <div className="flex flex-col items-end gap-1.5 shrink-0">
                         <div className="rounded-2xl border border-purple-400/40 bg-gradient-to-br from-purple-500/25 to-cyan-500/15 px-3 py-1.5 text-right shadow-inner">
                           <span className="block text-[10px] font-bold uppercase tracking-wider text-purple-300">
@@ -1387,15 +1756,42 @@ end)
                             {acc.level}
                           </span>
                         </div>
-                        <button
-                          onClick={() =>
-                            handleDeleteAccount(acc.user_id, acc.username)
-                          }
-                          className="text-[11px] text-slate-500 hover:text-rose-400 transition px-1"
-                          title="ลบไอดีนี้ออกจากแดชบอร์ด"
-                        >
-                          ลบการ์ด
-                        </button>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() =>
+                              handleToggleSaveToLog(
+                                acc.user_id,
+                                acc.username,
+                                acc.save_to_log !== false
+                              )
+                            }
+                            className={`rounded-lg border px-2 py-0.5 text-[10px] font-bold transition ${
+                              acc.save_to_log !== false
+                                ? "border-amber-400/45 bg-amber-500/15 text-amber-200 hover:bg-amber-500/25"
+                                : "border-slate-600/60 bg-slate-800/70 text-slate-400 hover:text-rose-300 hover:border-rose-500/40"
+                            }`}
+                            title={
+                              acc.save_to_log !== false
+                                ? "กำลังตั้งค่า: เก็บไอดีนี้ลง Log ก่อนลบ (คลิกเพื่อเปลี่ยนเป็นไม่เก็บ)"
+                                : "กำลังตั้งค่า: ไม่เก็บไอดีนี้ลง Log (คลิกเพื่อเปลี่ยนเป็นเก็บลง Log)"
+                            }
+                          >
+                            {acc.save_to_log !== false
+                              ? "📥 เก็บลง Log"
+                              : "🚫 ไม่เก็บ Log"}
+                          </button>
+
+                          <button
+                            onClick={() =>
+                              handleDeleteAccount(acc.user_id, acc.username)
+                            }
+                            className="rounded-lg border border-rose-500/25 bg-rose-500/10 px-2 py-0.5 text-[10px] font-semibold text-rose-300 hover:bg-rose-500/25 transition"
+                            title="ลบไอดีนี้ออกจากแดชบอร์ด"
+                          >
+                            ลบการ์ด
+                          </button>
+                        </div>
                       </div>
                     </div>
 
@@ -1655,6 +2051,359 @@ end)
                   <code>{sampleLuauScript}</code>
                 </pre>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===================================================================
+          MODAL: ACCOUNT LOG ARCHIVE (บันทึกไอดีก่อนลบออกจากหน้าเว็บ)
+      =================================================================== */}
+      {showLogModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-3 sm:p-5 backdrop-blur-md">
+          <div className="relative flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl border border-amber-500/40 bg-[#080816] shadow-2xl">
+            {/* Modal Header */}
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-5 sm:px-6 py-4">
+              <div>
+                <h3 className="text-lg sm:text-xl font-extrabold text-white flex items-center gap-2">
+                  <span>📋</span>
+                  <span>ประวัติ Log ไอดีที่ถูกเก็บไว้ ({logEntries.length} ไอดี)</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  ไอดีที่เปิด{" "}
+                  <span className="text-amber-300 font-semibold">
+                    &ldquo;📥 เก็บลง Log&rdquo;
+                  </span>{" "}
+                  (ค่าเริ่มต้น) จะถูกบันทึก ชื่อ, เพชร, April Fool, เลเวล และ Gold อัตโนมัติก่อนถูกลบออกจากหน้าเว็บ
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleSnapshotAllToLog}
+                  className="rounded-xl border border-emerald-400/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-bold text-emerald-200 hover:bg-emerald-500/25 transition"
+                  title="บันทึกไอดีที่อยู่บนหน้าเว็บตอนนี้ (เฉพาะที่ตั้งค่าเก็บลง Log) เข้าสู่ Log ทันที"
+                >
+                  📥 บันทึกไอดีหน้าเว็บตอนนี้
+                </button>
+                <button
+                  onClick={() => setShowLogModal(false)}
+                  className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-1.5 text-sm font-bold text-slate-300 hover:bg-white/10"
+                >
+                  ✕ ปิด
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body */}
+            <div className="overflow-y-auto p-5 sm:p-6 space-y-5">
+              {/* Summary Boxes */}
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <div className="rounded-2xl border border-amber-500/30 bg-amber-950/20 p-3.5">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-amber-300">
+                    📋 ไอดีใน Log ทั้งหมด
+                  </span>
+                  <p className="mt-1 text-xl sm:text-2xl font-black text-white tabular-nums">
+                    {formatNumber(logSummary.total_logs)}{" "}
+                    <span className="text-xs font-semibold text-amber-300/80">
+                      ไอดี
+                    </span>
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-cyan-500/30 bg-cyan-950/20 p-3.5">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-cyan-300">
+                    💎 เพชรรวมใน Log
+                  </span>
+                  <p className="mt-1 text-xl sm:text-2xl font-black text-cyan-200 tabular-nums">
+                    {formatNumber(logSummary.total_gems)}
+                  </p>
+                  <span className="text-[10px] font-mono text-slate-400">
+                    ({formatCompact(logSummary.total_gems)})
+                  </span>
+                </div>
+
+                <div className="rounded-2xl border border-pink-500/30 bg-fuchsia-950/20 p-3.5">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-pink-300">
+                    🌸 April Fool รวม
+                  </span>
+                  <p className="mt-1 text-xl sm:text-2xl font-black text-pink-200 tabular-nums">
+                    {formatNumber(logSummary.total_april_coins)}
+                  </p>
+                  <span className="text-[10px] font-mono text-pink-300/80">
+                    ({formatCompact(logSummary.total_april_coins)})
+                  </span>
+                </div>
+
+                <div className="rounded-2xl border border-yellow-500/30 bg-yellow-950/20 p-3.5">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-amber-300">
+                    🪙 Gold รวมใน Log
+                  </span>
+                  <p className="mt-1 text-xl sm:text-2xl font-black text-amber-200 tabular-nums">
+                    {formatNumber(logSummary.total_gold)}
+                  </p>
+                  <span className="text-[10px] font-mono text-slate-400">
+                    ({formatCompact(logSummary.total_gold)})
+                  </span>
+                </div>
+              </div>
+
+              {/* Search, Sort & Export Toolbar */}
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between rounded-2xl border border-white/10 bg-slate-900/60 p-3.5">
+                <div className="flex flex-1 items-center gap-2 rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2">
+                  <span className="text-slate-400">🔍</span>
+                  <input
+                    type="text"
+                    value={logSearchQuery}
+                    onChange={(e) => setLogSearchQuery(e.target.value)}
+                    placeholder="ค้นหาชื่อไอดีใน Log..."
+                    className="w-full bg-transparent text-xs sm:text-sm text-white placeholder-slate-500 focus:outline-none"
+                  />
+                  {logSearchQuery && (
+                    <button
+                      onClick={() => setLogSearchQuery("")}
+                      className="text-xs text-slate-400 hover:text-white"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2">
+                    <span className="text-xs text-slate-400">เรียง:</span>
+                    <select
+                      value={logSortBy}
+                      onChange={(e) =>
+                        setLogSortBy(
+                          e.target.value as
+                            | "logged_at_desc"
+                            | "gems_desc"
+                            | "april_coins_desc"
+                            | "level_desc"
+                            | "gold_desc"
+                        )
+                      }
+                      className="bg-transparent text-xs font-bold text-amber-200 focus:outline-none cursor-pointer"
+                    >
+                      <option
+                        value="logged_at_desc"
+                        className="bg-slate-900 text-white"
+                      >
+                        🕒 บันทึกล่าสุด
+                      </option>
+                      <option
+                        value="gems_desc"
+                        className="bg-slate-900 text-white"
+                      >
+                        💎 เพชรมากสุด
+                      </option>
+                      <option
+                        value="april_coins_desc"
+                        className="bg-slate-900 text-white"
+                      >
+                        🌸 April Fool มากสุด
+                      </option>
+                      <option
+                        value="level_desc"
+                        className="bg-slate-900 text-white"
+                      >
+                        ⭐ เลเวลมากสุด
+                      </option>
+                      <option
+                        value="gold_desc"
+                        className="bg-slate-900 text-white"
+                      >
+                        🪙 Gold มากสุด
+                      </option>
+                    </select>
+                  </div>
+
+                  {filteredLogs.length > 0 && (
+                    <button
+                      onClick={() =>
+                        handleCopy(formatLogExportText(), "log-export-all")
+                      }
+                      className="rounded-xl border border-cyan-400/40 bg-cyan-500/15 px-3 py-2 text-xs font-bold text-cyan-200 hover:bg-cyan-500/25 transition"
+                    >
+                      {copiedText === "log-export-all"
+                        ? "✓ คัดลอกทั้งหมดแล้ว!"
+                        : "📋 คัดลอกรายการทั้งหมด"}
+                    </button>
+                  )}
+
+                  {logEntries.length > 0 && (
+                    <button
+                      onClick={handleClearAllLogs}
+                      className="rounded-xl border border-rose-500/35 bg-rose-500/15 px-3 py-2 text-xs font-bold text-rose-300 hover:bg-rose-500/25 transition"
+                    >
+                      🗑️ ล้าง Log ทั้งหมด
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Log Entries List */}
+              {filteredLogs.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-white/15 bg-slate-900/40 p-10 text-center space-y-2">
+                  <div className="text-3xl">📋</div>
+                  <p className="text-base font-bold text-white">
+                    {logEntries.length === 0
+                      ? "ยังไม่มีไอดีถูกบันทึกใน Log"
+                      : "ไม่พบไอดีใน Log ที่ตรงกับคำค้นหา"}
+                  </p>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto">
+                    เมื่อระบบลบไอดีออกจากหน้าเว็บ (หรือกดปุ่ม &ldquo;ลบการ์ด&rdquo; / &ldquo;ล้างจอ Offline&rdquo;) ไอดีที่ตั้งค่า{" "}
+                    <span className="text-amber-300 font-semibold">
+                      📥 เก็บลง Log
+                    </span>{" "}
+                    จะถูกบันทึกข้อมูลไว้ที่นี่โดยอัตโนมัติ
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/70">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-white/10 bg-slate-900/80 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                        <th className="py-3 px-4">ชื่อไอดี (Account)</th>
+                        <th className="py-3 px-4">💎 เพชร (Gems)</th>
+                        <th className="py-3 px-4">🌸 April Fool</th>
+                        <th className="py-3 px-4">⭐ Level</th>
+                        <th className="py-3 px-4">🪙 Gold</th>
+                        <th className="py-3 px-4">สาเหตุ / เวลาบันทึก</th>
+                        <th className="py-3 px-4 text-right">จัดการ</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5 text-xs sm:text-sm">
+                      {filteredLogs.map((item) => {
+                        const rowCopyText = `${item.username} | Gems: ${formatNumber(
+                          item.gems
+                        )} | April Fool: ${formatNumber(
+                          item.april_coins || 0
+                        )} | Lv.${item.level} | Gold: ${formatNumber(
+                          item.gold
+                        )}`;
+                        const agoSec = Math.max(
+                          0,
+                          nowTick - (item.logged_at || nowTick)
+                        );
+
+                        return (
+                          <tr
+                            key={item.user_id}
+                            className="hover:bg-white/[0.03] transition"
+                          >
+                            {/* Username & Avatar */}
+                            <td className="py-3.5 px-4">
+                              <div className="flex items-center gap-3">
+                                <img
+                                  src={
+                                    item.avatar_url ||
+                                    generateFallbackAvatarSvg(item.username)
+                                  }
+                                  alt={item.username}
+                                  onError={(e) => {
+                                    (e.currentTarget as HTMLImageElement).src =
+                                      generateFallbackAvatarSvg(item.username);
+                                  }}
+                                  className="h-10 w-10 rounded-xl bg-slate-900 object-cover border border-white/10 shrink-0"
+                                />
+                                <div className="min-w-0">
+                                  <p className="font-extrabold text-white truncate">
+                                    {item.username}
+                                  </p>
+                                  <p className="text-[11px] font-mono text-slate-400 truncate">
+                                    ID: {item.user_id}
+                                  </p>
+                                </div>
+                              </div>
+                            </td>
+
+                            {/* Gems */}
+                            <td className="py-3.5 px-4">
+                              <span className="font-black text-cyan-300 tabular-nums">
+                                {formatNumber(item.gems)}
+                              </span>
+                              <span className="block text-[10px] font-mono text-slate-400">
+                                ({formatCompact(item.gems)})
+                              </span>
+                            </td>
+
+                            {/* April Fool (AprilCoins) */}
+                            <td className="py-3.5 px-4">
+                              <span className="font-black text-pink-300 tabular-nums">
+                                {formatNumber(item.april_coins || 0)}
+                              </span>
+                              <span className="block text-[10px] font-mono text-pink-400/70">
+                                ({formatCompact(item.april_coins || 0)})
+                              </span>
+                            </td>
+
+                            {/* Level */}
+                            <td className="py-3.5 px-4">
+                              <span className="inline-flex items-center rounded-lg border border-purple-400/35 bg-purple-500/15 px-2.5 py-1 font-black text-purple-200 tabular-nums">
+                                Lv. {item.level}
+                              </span>
+                            </td>
+
+                            {/* Gold */}
+                            <td className="py-3.5 px-4">
+                              <span className="font-extrabold text-amber-300 tabular-nums">
+                                {formatNumber(item.gold)}
+                              </span>
+                              <span className="block text-[10px] font-mono text-slate-400">
+                                ({formatCompact(item.gold)})
+                              </span>
+                            </td>
+
+                            {/* Reason & Timestamp */}
+                            <td className="py-3.5 px-4">
+                              <span className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-semibold text-slate-300">
+                                {item.reason || "บันทึกก่อนลบ"}
+                              </span>
+                              <span className="block text-[11px] text-slate-400 mt-1">
+                                {formatRelativeThaiTime(agoSec)}
+                              </span>
+                            </td>
+
+                            {/* Actions */}
+                            <td className="py-3.5 px-4 text-right">
+                              <div className="inline-flex items-center gap-1.5">
+                                <button
+                                  onClick={() =>
+                                    handleCopy(
+                                      rowCopyText,
+                                      `log-row-${item.user_id}`
+                                    )
+                                  }
+                                  className="rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-2.5 py-1 text-xs font-bold text-cyan-200 hover:bg-cyan-500/20 transition"
+                                  title="คัดลอกข้อมูลไอดีนี้"
+                                >
+                                  {copiedText === `log-row-${item.user_id}`
+                                    ? "✓ Copied"
+                                    : "คัดลอก"}
+                                </button>
+                                <button
+                                  onClick={() =>
+                                    handleDeleteLogEntry(
+                                      item.user_id,
+                                      item.username
+                                    )
+                                  }
+                                  className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-xs font-bold text-rose-300 hover:bg-rose-500/25 transition"
+                                  title="ลบไอดีนี้ออกจากประวัติ Log"
+                                >
+                                  ลบ
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         </div>

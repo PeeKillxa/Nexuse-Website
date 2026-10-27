@@ -23,6 +23,7 @@ export interface TelemetryPayload {
   april_coins?: number;
   wins?: number;
   disconnects?: number;
+  save_to_log?: boolean;
   extra_stats?: Record<string, number | string | boolean>;
   ping?: number;
   fps?: number;
@@ -44,16 +45,35 @@ export interface AccountWithComputedStatus extends StoredAccount {
   seconds_since_update: number;
 }
 
+export interface AccountLogEntry {
+  user_id: number;
+  username: string;
+  display_name: string;
+  avatar_url: string;
+  level: number;
+  gems: number;
+  april_coins: number;
+  gold: number;
+  wins: number;
+  disconnects: number;
+  game_name: string;
+  logged_at: number;
+  reason?: string;
+}
+
 // ============================================================================
 // CONFIGURATION & GLOBAL IN-MEMORY CACHE (+ OPTIONAL VERCEL KV / UPSTASH REDIS)
 // ============================================================================
 
 const OFFLINE_TIMEOUT_SECONDS = 120; // Account is marked OFFLINE if no heartbeat > 120s
 const KV_HASH_KEY = "roblox:farm:accounts:v1";
+const KV_LOGS_HASH_KEY = "roblox:farm:logs:v1";
 
 declare global {
   // eslint-disable-next-line no-var
   var __ROBLOX_FARM_STORE__: Map<string, StoredAccount> | undefined;
+  // eslint-disable-next-line no-var
+  var __ROBLOX_FARM_LOGS__: Map<string, AccountLogEntry> | undefined;
   // eslint-disable-next-line no-var
   var __ROBLOX_AVATAR_CACHE__: Map<number, string> | undefined;
 }
@@ -61,6 +81,10 @@ declare global {
 const memoryStore: Map<string, StoredAccount> =
   globalThis.__ROBLOX_FARM_STORE__ ??
   (globalThis.__ROBLOX_FARM_STORE__ = new Map<string, StoredAccount>());
+
+const memoryLogStore: Map<string, AccountLogEntry> =
+  globalThis.__ROBLOX_FARM_LOGS__ ??
+  (globalThis.__ROBLOX_FARM_LOGS__ = new Map<string, AccountLogEntry>());
 
 const avatarCache: Map<number, string> =
   globalThis.__ROBLOX_AVATAR_CACHE__ ??
@@ -168,6 +192,78 @@ async function clearAllStoredAccounts(): Promise<void> {
   const kv = getKvConfig();
   if (kv) {
     await kvCommand(["DEL", KV_HASH_KEY]);
+  }
+}
+
+// ============================================================================
+// ACCOUNT LOG STORAGE HELPERS (Saved before removal when save_to_log === true)
+// ============================================================================
+
+async function getAllAccountLogs(): Promise<AccountLogEntry[]> {
+  const kv = getKvConfig();
+  if (kv) {
+    const raw = await kvCommand<string[]>(["HGETALL", KV_LOGS_HASH_KEY]);
+    if (Array.isArray(raw) && raw.length > 0) {
+      const list: AccountLogEntry[] = [];
+      for (let i = 0; i < raw.length; i += 2) {
+        try {
+          const parsed = JSON.parse(raw[i + 1]) as AccountLogEntry;
+          list.push(parsed);
+          memoryLogStore.set(String(parsed.user_id), parsed);
+        } catch {
+          // ignore malformed
+        }
+      }
+      return list.sort((a, b) => (b.logged_at || 0) - (a.logged_at || 0));
+    }
+  }
+  return Array.from(memoryLogStore.values()).sort(
+    (a, b) => (b.logged_at || 0) - (a.logged_at || 0)
+  );
+}
+
+async function saveAccountToLog(
+  acc: StoredAccount | AccountLogEntry,
+  reason = "ลบออกจากหน้าเว็บ"
+): Promise<AccountLogEntry> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const key = String(acc.user_id);
+  const entry: AccountLogEntry = {
+    user_id: Number(acc.user_id),
+    username: acc.username || `User_${acc.user_id}`,
+    display_name: acc.display_name || acc.username || `Farmer_${acc.user_id}`,
+    avatar_url: acc.avatar_url || "",
+    level: Number(acc.level || 1),
+    gems: Number(acc.gems || 0),
+    april_coins: Number(acc.april_coins || 0),
+    gold: Number(acc.gold || 0),
+    wins: Number(acc.wins || 0),
+    disconnects: Number(acc.disconnects || 0),
+    game_name: acc.game_name || "Anime Adventures",
+    logged_at: nowSec,
+    reason,
+  };
+  memoryLogStore.set(key, entry);
+  const kv = getKvConfig();
+  if (kv) {
+    await kvCommand(["HSET", KV_LOGS_HASH_KEY, key, JSON.stringify(entry)]);
+  }
+  return entry;
+}
+
+async function deleteAccountLogEntry(userId: string): Promise<void> {
+  memoryLogStore.delete(userId);
+  const kv = getKvConfig();
+  if (kv) {
+    await kvCommand(["HDEL", KV_LOGS_HASH_KEY, userId]);
+  }
+}
+
+async function clearAllAccountLogs(): Promise<void> {
+  memoryLogStore.clear();
+  const kv = getKvConfig();
+  if (kv) {
+    await kvCommand(["DEL", KV_LOGS_HASH_KEY]);
   }
 }
 
@@ -284,6 +380,14 @@ async function upsertAccountTelemetry(
   const aprilCoins =
     incomingAprilCoins > 0 ? incomingAprilCoins : existing?.april_coins ?? 0;
 
+  // Default save_to_log is true unless explicitly toggled to false
+  const saveToLog =
+    typeof payload.save_to_log === "boolean"
+      ? payload.save_to_log
+      : existing?.save_to_log !== undefined
+      ? existing.save_to_log
+      : true;
+
   const avatarUrl = await resolveRobloxAvatar(userId, payload.avatar_url);
 
   const record: StoredAccount = {
@@ -309,6 +413,7 @@ async function upsertAccountTelemetry(
     april_coins: aprilCoins,
     wins,
     disconnects,
+    save_to_log: saveToLog,
     extra_stats:
       payload.extra_stats && typeof payload.extra_stats === "object"
         ? payload.extra_stats
@@ -355,13 +460,14 @@ export async function OPTIONS() {
 
 // ============================================================================
 // GET /api/telemetry
-// Returns all accounts + real-time ONLINE/OFFLINE state (120s timeout) + summary metrics
+// Returns all accounts + real-time ONLINE/OFFLINE state (120s timeout) + summary + logs
 // ============================================================================
 
 export async function GET() {
   try {
     const nowSec = Math.floor(Date.now() / 1000);
     const rawAccounts = await getAllStoredAccounts();
+    const logs = await getAllAccountLogs();
 
     const accounts: AccountWithComputedStatus[] = [];
 
@@ -378,8 +484,8 @@ export async function GET() {
       let wins = acc.wins ?? 0;
       let disconnects = acc.disconnects ?? 0;
       let countedOffline = acc.counted_current_offline ?? false;
-
       const aprilCoins = acc.april_coins ?? 0;
+      const saveToLog = acc.save_to_log !== undefined ? acc.save_to_log : true;
 
       if (effectiveStatus === "OFFLINE" && !countedOffline) {
         disconnects += 1;
@@ -389,6 +495,7 @@ export async function GET() {
           april_coins: aprilCoins,
           wins,
           disconnects,
+          save_to_log: saveToLog,
           counted_current_offline: true,
         };
         await saveStoredAccount(updatedRecord);
@@ -399,6 +506,7 @@ export async function GET() {
         april_coins: aprilCoins,
         wins,
         disconnects,
+        save_to_log: saveToLog,
         counted_current_offline: countedOffline,
         effective_status: effectiveStatus,
         seconds_since_update: secondsSinceUpdate,
@@ -442,6 +550,7 @@ export async function GET() {
         storage_mode: getKvConfig() ? "vercel-kv" : "in-memory",
         summary,
         accounts,
+        logs,
       },
       { status: 200, headers: CORS_HEADERS }
     );
@@ -459,7 +568,7 @@ export async function GET() {
 
 // ============================================================================
 // POST /api/telemetry
-// Receives single account payload or batch payload from Roblox Luau Executor
+// Receives single account payload, batch payload, or log management commands
 // ============================================================================
 
 export async function POST(req: NextRequest) {
@@ -472,6 +581,64 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
+
+    // 1. Toggle save_to_log preference on a specific account
+    if (body?.action === "toggle_save_to_log") {
+      const userId = Number(body.user_id);
+      const saveToLog = Boolean(body.save_to_log);
+      const existing = await getStoredAccount(userId);
+      if (existing) {
+        existing.save_to_log = saveToLog;
+        await saveStoredAccount(existing);
+      }
+      if (!saveToLog) {
+        // Also remove from log if user explicitly turned off logging for this ID
+        await deleteAccountLogEntry(String(userId));
+      }
+      const logs = await getAllAccountLogs();
+      return NextResponse.json(
+        { ok: true, user_id: userId, save_to_log: saveToLog, logs },
+        { status: 200, headers: CORS_HEADERS }
+      );
+    }
+
+    // 2. Snapshot accounts with save_to_log !== false into the Log manually
+    if (body?.action === "snapshot_to_log") {
+      const all = await getAllStoredAccounts();
+      const savedEntries: AccountLogEntry[] = [];
+      for (const acc of all) {
+        if (acc.save_to_log !== false) {
+          savedEntries.push(await saveAccountToLog(acc, "บันทึกเข้า Log"));
+        }
+      }
+      const logs = await getAllAccountLogs();
+      return NextResponse.json(
+        { ok: true, saved_count: savedEntries.length, logs },
+        { status: 200, headers: CORS_HEADERS }
+      );
+    }
+
+    // 3. Delete a single entry from the Account Log
+    if (body?.action === "delete_log_entry") {
+      const userId = String(body.user_id || "");
+      if (userId) {
+        await deleteAccountLogEntry(userId);
+      }
+      const logs = await getAllAccountLogs();
+      return NextResponse.json(
+        { ok: true, deleted_log_user_id: userId, logs },
+        { status: 200, headers: CORS_HEADERS }
+      );
+    }
+
+    // 4. Clear all Account Logs
+    if (body?.action === "clear_logs") {
+      await clearAllAccountLogs();
+      return NextResponse.json(
+        { ok: true, logs: [] },
+        { status: 200, headers: CORS_HEADERS }
+      );
+    }
 
     // Batch payload support: { accounts: [ ... ] } or Array
     if (Array.isArray(body) || Array.isArray(body?.accounts)) {
@@ -516,9 +683,10 @@ export async function POST(req: NextRequest) {
 
 // ============================================================================
 // DELETE /api/telemetry
-// ?user_id=12345678  -> Remove single account
-// ?mode=offline      -> Remove all offline accounts
-// ?mode=all          -> Clear all accounts
+// Before deleting from dashboard, automatically saves to Log if save_to_log !== false!
+// ?user_id=12345678  -> Archive (if save_to_log) & remove single account
+// ?mode=offline      -> Archive (if save_to_log) & remove all offline accounts
+// ?mode=all          -> Archive (if save_to_log) & clear all accounts
 // ============================================================================
 
 export async function DELETE(req: NextRequest) {
@@ -531,12 +699,19 @@ export async function DELETE(req: NextRequest) {
 
   const { searchParams } = new URL(req.url);
   const userId = searchParams.get("user_id");
+  const skipLog = searchParams.get("skip_log") === "1";
   const mode = searchParams.get("mode");
 
   if (userId) {
+    const existing = await getStoredAccount(Number(userId));
+    let loggedEntry: AccountLogEntry | null = null;
+    if (existing && existing.save_to_log !== false && !skipLog) {
+      loggedEntry = await saveAccountToLog(existing, "ลบการ์ดออกจากหน้าเว็บ");
+    }
     await deleteStoredAccount(userId);
+    const logs = await getAllAccountLogs();
     return NextResponse.json(
-      { ok: true, deleted_user_id: userId },
+      { ok: true, deleted_user_id: userId, logged_entry: loggedEntry, logs },
       { status: 200, headers: CORS_HEADERS }
     );
   }
@@ -545,26 +720,44 @@ export async function DELETE(req: NextRequest) {
     const nowSec = Math.floor(Date.now() / 1000);
     const all = await getAllStoredAccounts();
     let removed = 0;
+    let loggedCount = 0;
     for (const acc of all) {
       const isOffline =
         acc.status === "OFFLINE" ||
         nowSec - (acc.server_updated_at || acc.updated_at) >
           OFFLINE_TIMEOUT_SECONDS;
       if (isOffline) {
+        if (acc.save_to_log !== false && !skipLog) {
+          await saveAccountToLog(acc, "ล้างจอ Offline");
+          loggedCount++;
+        }
         await deleteStoredAccount(String(acc.user_id));
         removed++;
       }
     }
+    const logs = await getAllAccountLogs();
     return NextResponse.json(
-      { ok: true, removed_offline_count: removed },
+      {
+        ok: true,
+        removed_offline_count: removed,
+        logged_count: loggedCount,
+        logs,
+      },
       { status: 200, headers: CORS_HEADERS }
     );
   }
 
   if (mode === "all") {
+    const all = await getAllStoredAccounts();
+    for (const acc of all) {
+      if (acc.save_to_log !== false && !skipLog) {
+        await saveAccountToLog(acc, "ล้างข้อมูลทั้งหมด");
+      }
+    }
     await clearAllStoredAccounts();
+    const logs = await getAllAccountLogs();
     return NextResponse.json(
-      { ok: true, message: "Cleared all accounts" },
+      { ok: true, message: "Cleared all accounts", logs },
       { status: 200, headers: CORS_HEADERS }
     );
   }
