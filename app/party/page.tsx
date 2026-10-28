@@ -17,6 +17,8 @@ interface PartyMember {
 
 interface PartySyncState {
   enabled: boolean;
+  lobby_only: boolean;
+  lobby_place_id: number;
   wait_for_character: boolean;
   settle_delay_seconds: number;
   main_script_url: string;
@@ -34,6 +36,8 @@ const LOCAL_PARTY_STATE_KEY = "nexus_party_sync_state_v1";
 
 const DEFAULT_PARTY_STATE: PartySyncState = {
   enabled: true,
+  lobby_only: true,
+  lobby_place_id: 8304191830,
   wait_for_character: true,
   settle_delay_seconds: 2,
   main_script_url:
@@ -478,6 +482,8 @@ local httpRequest = (syn and syn.request) or (http and http.request) or http_req
 
 local FALLBACK_CONFIG = {
     enabled = true,
+    lobby_only = true,
+    lobby_place_id = 8304191830,
     wait_for_character = true,
     settle_delay_seconds = 2,
     main_script_url = "https://raw.githubusercontent.com/weziiotez-dev/xt-hub/main/crazy.lua",
@@ -612,15 +618,40 @@ end
 -- ── 4. ลูปตรวจสอบตี้ (ซิงค์รายชื่อจากเว็บอัตโนมัติทุกๆ 9 วินาทีระหว่างรอ) ──────────
 task.spawn(function()
     local currentConfig = fetchLivePartyConfig()
-    local lastWebSync = tick()
 
-    print("[PartySync] 🌐 ซิงค์รายชื่อตี้จากเว็บสำเร็จ! กำลังตรวจสอบเพื่อนในแมพ...")
+    -- ตรวจสอบว่าอยู่ใน Lobby หรือไม่ (ถ้าเปิดโหมด lobby_only)
+    local isLobbyOnly = (currentConfig.lobby_only ~= false)
+    local targetLobbyId = tonumber(currentConfig.lobby_place_id) or 8304191830
+
+    if isLobbyOnly and game.PlaceId ~= targetLobbyId then
+        print(string.format("[PartySync] ⚔️ ไม่อยู่ใน Lobby (PlaceId: %s ~= %s) -> ข้ามการเช็คตี้ รันสคริปต์หลักทันที!", tostring(game.PlaceId), tostring(targetLobbyId)))
+        local scriptUrl = tostring(currentConfig.main_script_url or "https://raw.githubusercontent.com/weziiotez-dev/xt-hub/main/crazy.lua")
+        pcall(function()
+            loadstring(game:HttpGet(scriptUrl))()
+        end)
+        return
+    end
+
+    local lastWebSync = tick()
+    print("[PartySync] 🏠 ตรวจพบว่าอยู่ใน Lobby! ซิงค์รายชื่อตี้จากเว็บสำเร็จ... กำลังตรวจสอบเพื่อนในห้อง")
 
     while true do
+        -- เผื่อมีการวาร์ปออกจาก Lobby ระหว่างรอ
+        if isLobbyOnly and game.PlaceId ~= targetLobbyId then
+            print("[PartySync] ⚔️ วาร์ปออกจาก Lobby แล้ว -> รันสคริปต์หลักทันที!")
+            local scriptUrl = tostring(currentConfig.main_script_url or "https://raw.githubusercontent.com/weziiotez-dev/xt-hub/main/crazy.lua")
+            pcall(function()
+                loadstring(game:HttpGet(scriptUrl))()
+            end)
+            break
+        end
+
         -- ดึงข้อมูลใหม่จากเว็บทุก 9 วินาที (เผื่อแก้ไขเพิ่ม/ลบคนบนหน้าเว็บกลางคัน)
         if tick() - lastWebSync >= 9 then
             lastWebSync = tick()
             currentConfig = fetchLivePartyConfig()
+            isLobbyOnly = (currentConfig.lobby_only ~= false)
+            targetLobbyId = tonumber(currentConfig.lobby_place_id) or 8304191830
         end
 
         local allReady, count, total, missing = verifyPartyInMap(currentConfig)
@@ -830,6 +861,34 @@ end)`;
               <h3 className="text-sm font-extrabold text-white">
                 ⚙️ ตั้งค่าการทำงานของสคริปต์เมื่อครบตี้
               </h3>
+
+              {/* Lobby Only Mode */}
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-slate-950/70 p-3">
+                <div>
+                  <p className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <span>🏠</span>
+                    <span>เช็คเฉพาะใน Lobby เท่านั้น (Lobby Only)</span>
+                  </p>
+                  <p className="text-[11px] text-slate-400">
+                    แมพต่อสู้ (Combat/Dungeon) จะรันสคริปต์หลักทันทีโดยไม่ต้องรอเช็คตี้ (Lobby PlaceId: {partyState.lobby_place_id || 8304191830})
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleUpdateSettings({
+                      lobby_only: partyState.lobby_only === false ? true : false,
+                    })
+                  }
+                  className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-extrabold transition ${
+                    partyState.lobby_only !== false
+                      ? "bg-purple-500/20 border border-purple-400/40 text-purple-300"
+                      : "bg-slate-800 text-slate-400"
+                  }`}
+                >
+                  {partyState.lobby_only !== false ? "ON" : "OFF"}
+                </button>
+              </div>
 
               <div className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-slate-950/70 p-3">
                 <div>

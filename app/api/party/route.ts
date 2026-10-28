@@ -18,6 +18,8 @@ export interface PartyMember {
 
 export interface PartySyncState {
   enabled: boolean; // เปิด/ปิดระบบรอเพื่อนครบตี้ก่อนรันสคริปต์หลัก
+  lobby_only: boolean; // เช็คเฉพาะใน Lobby เท่านั้น (แมพต่อสู้รันสคริปต์หลักทันที)
+  lobby_place_id: number; // PlaceId ของ Lobby (Default: 8304191830)
   wait_for_character: boolean; // รอให้ตัวละคร (HumanoidRootPart) โหลดเกิดในแมพครบทุกคนก่อนรัน
   settle_delay_seconds: number; // หน่วงเวลาหลังครบตี้ก่อนรันสคริปต์ (วินาที)
   main_script_url: string; // ลิงก์สคริปต์หลักที่จะรันเมื่อเพื่อนครบ
@@ -35,6 +37,8 @@ declare global {
 function createDefaultPartyState(): PartySyncState {
   return {
     enabled: true,
+    lobby_only: true,
+    lobby_place_id: 8304191830,
     wait_for_character: true,
     settle_delay_seconds: 2,
     main_script_url:
@@ -289,10 +293,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 4. Update global settings (enabled, wait_for_character, settle_delay_seconds, main_script_url)
+    // 4. Update global settings (enabled, lobby_only, lobby_place_id, wait_for_character, settle_delay_seconds, main_script_url)
     if (action === "update_settings") {
       if (typeof body.enabled === "boolean") {
         state.enabled = body.enabled;
+      }
+      if (typeof body.lobby_only === "boolean") {
+        state.lobby_only = body.lobby_only;
+      }
+      if (typeof body.lobby_place_id === "number") {
+        state.lobby_place_id = Number(body.lobby_place_id);
       }
       if (typeof body.wait_for_character === "boolean") {
         state.wait_for_character = body.wait_for_character;
@@ -322,6 +332,13 @@ export async function POST(req: NextRequest) {
         (incomingState.updated_at || 0) > (state.updated_at || 0)
       ) {
         state.enabled = Boolean(incomingState.enabled);
+        state.lobby_only =
+          typeof incomingState.lobby_only === "boolean"
+            ? incomingState.lobby_only
+            : true;
+        state.lobby_place_id = Number(
+          incomingState.lobby_place_id ?? 8304191830
+        );
         state.wait_for_character = Boolean(incomingState.wait_for_character);
         state.settle_delay_seconds = Number(
           incomingState.settle_delay_seconds ?? 2
