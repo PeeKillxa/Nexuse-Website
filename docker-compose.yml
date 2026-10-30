@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   farm-dashboard:
     build: .
@@ -13,3 +11,11 @@ services:
       - DATA_DIR=/app/data
     volumes:
       - ./data:/app/data
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-tunnel
+    restart: unless-stopped
+    command: tunnel --url http://farm-dashboard:3000
+    depends_on:
+      - farm-dashboard
