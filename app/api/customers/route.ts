@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { readStorageFile, writeStorageFile } from "@/app/lib/server-storage";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -84,6 +85,17 @@ async function kvCommand<T = unknown>(command: unknown[]): Promise<T | null> {
 }
 
 async function loadCustomersState(): Promise<CustomerStoreState> {
+  // 1. Try file storage first (NAS)
+  const fileState = readStorageFile<CustomerStoreState | null>(
+    "customers.json",
+    null
+  );
+  if (fileState && Array.isArray(fileState.orders)) {
+    globalThis.__ROBLOX_FARM_CUSTOMERS__ = fileState;
+    return fileState;
+  }
+
+  // 2. Try KV
   if (hasVercelKV()) {
     const raw = await kvCommand<string>(["GET", KV_CUSTOMERS_KEY]);
     if (raw) {
@@ -107,6 +119,11 @@ async function loadCustomersState(): Promise<CustomerStoreState> {
 async function saveCustomersState(state: CustomerStoreState): Promise<void> {
   state.updated_at = Math.floor(Date.now() / 1000);
   globalThis.__ROBLOX_FARM_CUSTOMERS__ = state;
+
+  // 1. Save to persistent file storage
+  writeStorageFile("customers.json", state);
+
+  // 2. Save to KV
   if (hasVercelKV()) {
     await kvCommand(["SET", KV_CUSTOMERS_KEY, JSON.stringify(state)]);
   }

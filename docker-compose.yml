@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  farm-dashboard:
+    build: .
+    container_name: roblox-farm-server
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATA_DIR=/app/data
+    volumes:
+      - ./data:/app/data

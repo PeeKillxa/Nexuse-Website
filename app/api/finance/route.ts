@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { readStorageFile, writeStorageFile } from "@/app/lib/server-storage";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -101,6 +102,21 @@ async function kvCommand<T = unknown>(command: unknown[]): Promise<T | null> {
 }
 
 async function loadFinanceState(): Promise<FinanceState> {
+  // 1. Try persistent file storage first (NAS / local disk)
+  const fileState = readStorageFile<FinanceState | null>("finance.json", null);
+  if (fileState && Array.isArray(fileState.transactions)) {
+    globalThis.__ROBLOX_FINANCE_STATE__ = {
+      settings: fileState.settings || { ...defaultFinanceState.settings },
+      transactions: fileState.transactions || [],
+      deleted_ids: Array.isArray(fileState.deleted_ids)
+        ? fileState.deleted_ids
+        : [],
+      updated_at: fileState.updated_at || Math.floor(Date.now() / 1000),
+    };
+    return globalThis.__ROBLOX_FINANCE_STATE__;
+  }
+
+  // 2. Try Vercel KV / Upstash Redis
   if (hasVercelKV()) {
     const raw = await kvCommand<string>(["GET", KV_FINANCE_KEY]);
     if (raw) {
@@ -140,6 +156,10 @@ async function saveFinanceState(state: FinanceState): Promise<void> {
   }
   globalThis.__ROBLOX_FINANCE_STATE__ = state;
 
+  // 1. Save to persistent file storage (NAS / local disk)
+  writeStorageFile("finance.json", state);
+
+  // 2. Save to Vercel KV if available
   if (hasVercelKV()) {
     await kvCommand(["SET", KV_FINANCE_KEY, JSON.stringify(state)]);
   }

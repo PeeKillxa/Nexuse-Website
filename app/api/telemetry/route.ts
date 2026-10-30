@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { readStorageFile, writeStorageFile } from "@/app/lib/server-storage";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -92,6 +93,47 @@ const avatarCache: Map<number, string> =
   globalThis.__ROBLOX_AVATAR_CACHE__ ??
   (globalThis.__ROBLOX_AVATAR_CACHE__ = new Map<number, string>());
 
+// ============================================================================
+// FILE STORAGE HELPER (NAS / Local SSD Persistence)
+// ============================================================================
+let hasLoadedTelemetryFile = false;
+function ensureTelemetryLoadedFromFile() {
+  if (hasLoadedTelemetryFile) return;
+  hasLoadedTelemetryFile = true;
+  const saved = readStorageFile<{
+    accounts?: StoredAccount[];
+    logs?: AccountLogEntry[];
+  } | null>("telemetry.json", null);
+  if (saved) {
+    if (Array.isArray(saved.accounts)) {
+      saved.accounts.forEach((acc) => {
+        if (acc && acc.user_id) memoryStore.set(String(acc.user_id), acc);
+      });
+    }
+    if (Array.isArray(saved.logs)) {
+      saved.logs.forEach((log) => {
+        if (log && log.user_id) memoryLogStore.set(String(log.user_id), log);
+      });
+    }
+  }
+}
+
+let telemetrySaveTimeout: NodeJS.Timeout | null = null;
+function scheduleTelemetrySave() {
+  if (telemetrySaveTimeout) return;
+  telemetrySaveTimeout = setTimeout(() => {
+    telemetrySaveTimeout = null;
+    try {
+      writeStorageFile("telemetry.json", {
+        accounts: Array.from(memoryStore.values()),
+        logs: Array.from(memoryLogStore.values()),
+      });
+    } catch {
+      // ignore
+    }
+  }, 2000);
+}
+
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
@@ -136,6 +178,7 @@ async function kvCommand<T = unknown>(command: (string | number)[]): Promise<T |
 }
 
 async function getAllStoredAccounts(): Promise<StoredAccount[]> {
+  ensureTelemetryLoadedFromFile();
   const kv = getKvConfig();
   if (kv) {
     const raw = await kvCommand<string[]>(["HGETALL", KV_HASH_KEY]);
@@ -150,6 +193,7 @@ async function getAllStoredAccounts(): Promise<StoredAccount[]> {
           // ignore malformed entry
         }
       }
+      scheduleTelemetrySave();
       return list;
     }
   }
@@ -157,6 +201,7 @@ async function getAllStoredAccounts(): Promise<StoredAccount[]> {
 }
 
 async function getStoredAccount(userId: number): Promise<StoredAccount | undefined> {
+  ensureTelemetryLoadedFromFile();
   const key = String(userId);
   const kv = getKvConfig();
   if (kv) {
@@ -175,6 +220,7 @@ async function getStoredAccount(userId: number): Promise<StoredAccount | undefin
 async function saveStoredAccount(account: StoredAccount): Promise<void> {
   const key = String(account.user_id);
   memoryStore.set(key, account);
+  scheduleTelemetrySave();
   const kv = getKvConfig();
   if (kv) {
     await kvCommand(["HSET", KV_HASH_KEY, key, JSON.stringify(account)]);
@@ -183,6 +229,7 @@ async function saveStoredAccount(account: StoredAccount): Promise<void> {
 
 async function deleteStoredAccount(userId: string): Promise<void> {
   memoryStore.delete(userId);
+  scheduleTelemetrySave();
   const kv = getKvConfig();
   if (kv) {
     await kvCommand(["HDEL", KV_HASH_KEY, userId]);
@@ -191,6 +238,7 @@ async function deleteStoredAccount(userId: string): Promise<void> {
 
 async function clearAllStoredAccounts(): Promise<void> {
   memoryStore.clear();
+  scheduleTelemetrySave();
   const kv = getKvConfig();
   if (kv) {
     await kvCommand(["DEL", KV_HASH_KEY]);
@@ -202,6 +250,7 @@ async function clearAllStoredAccounts(): Promise<void> {
 // ============================================================================
 
 async function getAllAccountLogs(): Promise<AccountLogEntry[]> {
+  ensureTelemetryLoadedFromFile();
   const kv = getKvConfig();
   if (kv) {
     const raw = await kvCommand<string[]>(["HGETALL", KV_LOGS_HASH_KEY]);
@@ -216,6 +265,7 @@ async function getAllAccountLogs(): Promise<AccountLogEntry[]> {
           // ignore malformed
         }
       }
+      scheduleTelemetrySave();
       return list.sort((a, b) => (b.logged_at || 0) - (a.logged_at || 0));
     }
   }
@@ -263,6 +313,7 @@ async function saveAccountToLog(
     reason,
   };
   memoryLogStore.set(key, entry);
+  scheduleTelemetrySave();
   const kv = getKvConfig();
   if (kv) {
     await kvCommand(["HSET", KV_LOGS_HASH_KEY, key, JSON.stringify(entry)]);
@@ -272,6 +323,7 @@ async function saveAccountToLog(
 
 async function deleteAccountLogEntry(userId: string): Promise<void> {
   memoryLogStore.delete(userId);
+  scheduleTelemetrySave();
   const kv = getKvConfig();
   if (kv) {
     await kvCommand(["HDEL", KV_LOGS_HASH_KEY, userId]);
@@ -280,6 +332,7 @@ async function deleteAccountLogEntry(userId: string): Promise<void> {
 
 async function clearAllAccountLogs(): Promise<void> {
   memoryLogStore.clear();
+  scheduleTelemetrySave();
   const kv = getKvConfig();
   if (kv) {
     await kvCommand(["DEL", KV_LOGS_HASH_KEY]);

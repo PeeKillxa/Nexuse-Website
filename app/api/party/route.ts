@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { readStorageFile, writeStorageFile } from "@/app/lib/server-storage";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -115,6 +116,14 @@ async function kvCommand<T = unknown>(command: unknown[]): Promise<T | null> {
 }
 
 async function loadPartyState(): Promise<PartySyncState> {
+  // 1. Try file storage first (NAS)
+  const fileState = readStorageFile<PartySyncState | null>("party.json", null);
+  if (fileState && Array.isArray(fileState.members)) {
+    globalThis.__ROBLOX_PARTY_SYNC_STATE__ = fileState;
+    return fileState;
+  }
+
+  // 2. Try KV
   if (hasVercelKV()) {
     const raw = await kvCommand<string>(["GET", KV_PARTY_KEY]);
     if (raw) {
@@ -138,6 +147,11 @@ async function loadPartyState(): Promise<PartySyncState> {
 async function savePartyState(state: PartySyncState): Promise<void> {
   state.updated_at = Math.floor(Date.now() / 1000);
   globalThis.__ROBLOX_PARTY_SYNC_STATE__ = state;
+
+  // 1. Save to persistent file storage
+  writeStorageFile("party.json", state);
+
+  // 2. Save to KV
   if (hasVercelKV()) {
     await kvCommand(["SET", KV_PARTY_KEY, JSON.stringify(state)]);
   }
