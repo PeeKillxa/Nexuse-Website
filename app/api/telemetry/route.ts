@@ -12,6 +12,7 @@ export interface TelemetryPayload {
   username: string;
   display_name?: string;
   avatar_url?: string;
+  device_name?: string;
   account_age?: number;
   game_name?: string;
   place_id?: number;
@@ -50,6 +51,7 @@ export interface AccountLogEntry {
   username: string;
   display_name: string;
   avatar_url: string;
+  device_name?: string;
   level: number;
   gems: number;
   april_coins: number;
@@ -222,17 +224,34 @@ async function getAllAccountLogs(): Promise<AccountLogEntry[]> {
   );
 }
 
+function resolveKnownDevice(username?: string): string {
+  if (!username) return "PC";
+  const u = username.toLowerCase();
+  if (u.includes("obcxdi")) return "Android Device";
+  if (u.includes("albatross") || u.includes("opxdmmd")) return "Android Device-4";
+  if (u.includes("reachg8cp")) return "Android Device-5";
+  if (u.includes("johnwick") || u.includes("kenqu")) return "PC";
+  return "PC";
+}
+
 async function saveAccountToLog(
   acc: StoredAccount | AccountLogEntry,
   reason = "ลบออกจากหน้าเว็บ"
 ): Promise<AccountLogEntry> {
   const nowSec = Math.floor(Date.now() / 1000);
   const key = String(acc.user_id);
+  const rawDevice =
+    acc.device_name ||
+    ((acc as StoredAccount).extra_stats?.device_name as string) ||
+    resolveKnownDevice(acc.username) ||
+    "PC";
+
   const entry: AccountLogEntry = {
     user_id: Number(acc.user_id),
     username: acc.username || `User_${acc.user_id}`,
     display_name: acc.display_name || acc.username || `Farmer_${acc.user_id}`,
     avatar_url: acc.avatar_url || "",
+    device_name: rawDevice,
     level: Number(acc.level || 1),
     gems: Number(acc.gems || 0),
     april_coins: Number(acc.april_coins || 0),
@@ -390,6 +409,15 @@ async function upsertAccountTelemetry(
 
   const avatarUrl = await resolveRobloxAvatar(userId, payload.avatar_url);
 
+  const rawDeviceName =
+    payload.device_name ||
+    (payload.extra_stats?.device_name as string) ||
+    existing?.device_name;
+  const deviceName =
+    typeof rawDeviceName === "string" && rawDeviceName.trim()
+      ? rawDeviceName.trim()
+      : resolveKnownDevice(payload.username || existing?.username);
+
   const record: StoredAccount = {
     user_id: userId,
     username: String(payload.username || existing?.username || `User_${userId}`),
@@ -400,6 +428,7 @@ async function upsertAccountTelemetry(
         `Farmer_${userId}`
     ),
     avatar_url: avatarUrl,
+    device_name: deviceName,
     account_age: Number(payload.account_age ?? existing?.account_age ?? 0),
     game_name: String(
       payload.game_name || existing?.game_name || "Anime Adventures"
@@ -651,6 +680,21 @@ export async function POST(req: NextRequest) {
       await clearAllAccountLogs();
       return NextResponse.json(
         { ok: true, logs: [] },
+        { status: 200, headers: CORS_HEADERS }
+      );
+    }
+
+    // 5. Update device_name manually for an account
+    if (body?.action === "update_device_name") {
+      const userId = Number(body.user_id);
+      const newDevice = String(body.device_name || "").trim();
+      const existing = await getStoredAccount(userId);
+      if (existing) {
+        existing.device_name = newDevice || "PC";
+        await saveStoredAccount(existing);
+      }
+      return NextResponse.json(
+        { ok: true, user_id: userId, device_name: newDevice },
         { status: 200, headers: CORS_HEADERS }
       );
     }

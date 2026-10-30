@@ -424,7 +424,11 @@ local CACHE_FILE    = "nexus_party_sync_cache.json"
 -- ── 1. รันสคริปต์ Tracker ทันทีตามปกติ (ไม่รอเพื่อน) ─────────────────────────────
 task.spawn(function()
     pcall(function()
-        loadstring(game:HttpGet("https://cdn.jsdelivr.net/gh/PeeKillxa/AA_Macro@main/tracker.lua"))()
+        local ok, code = pcall(game.HttpGet, game, "https://raw.githubusercontent.com/PeeKillxa/AA_Macro/main/tracker.lua")
+        if not ok or not code or #code < 50 then
+            code = game:HttpGet("https://cdn.jsdelivr.net/gh/PeeKillxa/AA_Macro@main/tracker.lua")
+        end
+        loadstring(code)()
     end)
 end)
 

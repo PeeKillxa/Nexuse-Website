@@ -24,6 +24,7 @@ interface AccountTelemetry {
   april_coins: number;
   wins: number;
   disconnects: number;
+  device_name?: string;
   save_to_log?: boolean;
   extra_stats: Record<string, number | string | boolean>;
   ping: number;
@@ -42,6 +43,7 @@ interface AccountLogEntry {
   username: string;
   display_name: string;
   avatar_url: string;
+  device_name?: string;
   level: number;
   gems: number;
   april_coins: number;
@@ -338,6 +340,7 @@ export default function RobloxFarmDashboardPage() {
         username: acc.username,
         display_name: acc.display_name || acc.username,
         avatar_url: acc.avatar_url || "",
+        device_name: acc.device_name || (acc.extra_stats?.device_name as string) || "PC",
         level: acc.level || 1,
         gems: acc.gems || 0,
         april_coins:
@@ -933,7 +936,7 @@ export default function RobloxFarmDashboardPage() {
     return filteredLogs
       .map(
         (item, idx) =>
-          `${idx + 1}. ${item.username} | 💎 Gems: ${formatNumber(
+          `${idx + 1}. [${item.device_name || "PC"}] ${item.username} | 💎 Gems: ${formatNumber(
             item.gems
           )} | 🌸 April Fool: ${formatNumber(
             item.april_coins || 0
@@ -1217,8 +1220,16 @@ end)
             </div>
           </div>
 
-          {/* Action Buttons: Finance Page + Log Modal + Script Modal */}
+          {/* Action Buttons: Customer Orders + Finance Page + Log Modal + Script Modal */}
           <div className="flex flex-wrap items-center gap-2.5">
+            <Link
+              href="/customers"
+              className="inline-flex items-center gap-2 rounded-xl border border-blue-400/45 bg-blue-500/15 px-4 py-2.5 text-xs sm:text-sm font-bold text-blue-200 hover:bg-blue-500/25 hover:border-blue-300 transition shadow-lg shadow-blue-500/15"
+            >
+              <span>👥</span>
+              <span>บัญชีลูกค้า</span>
+            </Link>
+
             <Link
               href="/finance"
               className="inline-flex items-center gap-2 rounded-xl border border-emerald-400/45 bg-emerald-500/15 px-4 py-2.5 text-xs sm:text-sm font-bold text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-300 transition shadow-lg shadow-emerald-500/15"
@@ -1778,6 +1789,12 @@ end)
                               </span>
                             )}
 
+                            {/* Device / Emu Badge */}
+                            <span className="inline-flex items-center gap-1 rounded-full border border-purple-400/35 bg-purple-500/15 px-2 py-0.5 text-[10px] font-bold text-purple-200">
+                              <span>{acc.device_name?.startsWith("Android") ? "📱" : "💻"}</span>
+                              <span>{acc.device_name || "PC"}</span>
+                            </span>
+
                             {acc.account_age > 0 && (
                               <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-medium text-slate-400">
                                 อายุ {acc.account_age} วัน
@@ -2307,6 +2324,7 @@ end)
                     <thead>
                       <tr className="border-b border-white/10 bg-slate-900/80 text-[11px] font-bold uppercase tracking-wider text-slate-400">
                         <th className="py-3 px-4">ชื่อไอดี (Account)</th>
+                        <th className="py-3 px-4">🖥️ จอ / Emu</th>
                         <th className="py-3 px-4">💎 เพชร (Gems)</th>
                         <th className="py-3 px-4">🌸 April Fool</th>
                         <th className="py-3 px-4">⭐ Level</th>
@@ -2317,7 +2335,7 @@ end)
                     </thead>
                     <tbody className="divide-y divide-white/5 text-xs sm:text-sm">
                       {filteredLogs.map((item) => {
-                        const rowCopyText = `${item.username} | Gems: ${formatNumber(
+                        const rowCopyText = `[${item.device_name || "PC"}] ${item.username} | Gems: ${formatNumber(
                           item.gems
                         )} | April Fool: ${formatNumber(
                           item.april_coins || 0
@@ -2358,6 +2376,14 @@ end)
                                   </p>
                                 </div>
                               </div>
+                            </td>
+
+                            {/* Device / Emu */}
+                            <td className="py-3.5 px-4 whitespace-nowrap">
+                              <span className="inline-flex items-center gap-1.5 rounded-lg border border-purple-400/35 bg-purple-500/15 px-2.5 py-1 text-xs font-bold text-purple-200">
+                                <span>{item.device_name?.startsWith("Android") ? "📱" : "💻"}</span>
+                                <span>{item.device_name || "PC"}</span>
+                              </span>
                             </td>
 
                             {/* Gems */}

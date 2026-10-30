@@ -17,12 +17,12 @@ export default function Navbar() {
         "border-cyan-400/50 bg-cyan-500/15 text-cyan-200 shadow-[0_0_20px_-5px_rgba(6,182,212,0.35)]",
     },
     {
-      href: "/party",
-      label: "ตั้งค่าตี้รันสคริปต์ (Party Sync)",
-      icon: "🛡️",
-      badge: "SYNC",
+      href: "/customers",
+      label: "บัญชีลูกค้า",
+      icon: "👥",
+      badge: "NEW",
       activeColor:
-        "border-purple-400/50 bg-purple-500/15 text-purple-200 shadow-[0_0_20px_-5px_rgba(168,85,247,0.35)]",
+        "border-blue-400/50 bg-blue-500/15 text-blue-200 shadow-[0_0_20px_-5px_rgba(59,130,246,0.35)]",
     },
     {
       href: "/finance",
@@ -31,6 +31,14 @@ export default function Navbar() {
       badge: "50/50",
       activeColor:
         "border-emerald-400/50 bg-emerald-500/15 text-emerald-200 shadow-[0_0_20px_-5px_rgba(16,185,129,0.35)]",
+    },
+    {
+      href: "/party",
+      label: "ตั้งค่าตี้รันสคริปต์ (Party Sync)",
+      icon: "🛡️",
+      badge: "SYNC",
+      activeColor:
+        "border-purple-400/50 bg-purple-500/15 text-purple-200 shadow-[0_0_20px_-5px_rgba(168,85,247,0.35)]",
     },
   ];
 
