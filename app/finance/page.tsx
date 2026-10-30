@@ -82,6 +82,8 @@ export default function FinancePage() {
   });
   const [loading, setLoading] = useState<boolean>(true);
   const [submitting, setSubmitting] = useState<boolean>(false);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<number>(Date.now());
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [copiedSummary, setCopiedSummary] = useState<boolean>(false);
 
@@ -138,94 +140,136 @@ export default function FinancePage() {
   );
 
   // Load & Sync Data
-  const loadFinanceData = useCallback(async () => {
-    let localTxs: FinanceTransaction[] = [];
-    let localSettings: FinanceSettings | null = null;
-    let localDeleted: string[] = [];
+  const loadFinanceData = useCallback(
+    async (isBackground = false) => {
+      let localTxs: FinanceTransaction[] = [];
+      let localSettings: FinanceSettings | null = null;
+      let localDeleted: string[] = [];
 
-    try {
-      const rawTxs = localStorage.getItem(LOCAL_STORAGE_TX_KEY);
-      if (rawTxs) localTxs = JSON.parse(rawTxs) || [];
-      const rawCfg = localStorage.getItem(LOCAL_STORAGE_SETTINGS_KEY);
-      if (rawCfg) localSettings = JSON.parse(rawCfg) || null;
-      const rawDel = localStorage.getItem(LOCAL_STORAGE_DELETED_KEY);
-      if (rawDel) localDeleted = JSON.parse(rawDel) || [];
-    } catch {
-      // ignore
-    }
-
-    if (localTxs.length > 0) {
-      setTransactions(localTxs);
-    }
-    if (localSettings) {
-      setSettings(localSettings);
-      setEditNameA(localSettings.partner_a_name);
-      setEditNameB(localSettings.partner_b_name);
-    }
-
-    try {
-      const res = await fetch("/api/finance", { cache: "no-store" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as FinanceApiResponse;
-
-      if (data.ok && data.state) {
-        const srvTxs = data.state.transactions || [];
-        const srvDeleted = new Set([
-          ...(data.state.deleted_ids || []),
-          ...localDeleted,
-        ]);
-
-        // Merge server + local transactions (excluding deleted IDs)
-        const txMap = new Map<string, FinanceTransaction>();
-        [...srvTxs, ...localTxs].forEach((item) => {
-          if (item && item.id && !srvDeleted.has(item.id)) {
-            txMap.set(item.id, item);
-          }
-        });
-
-        const mergedTxs = Array.from(txMap.values()).sort(
-          (a, b) => (b.created_at || 0) - (a.created_at || 0)
-        );
-
-        const mergedSettings =
-          data.state.settings.partner_a_name !== "เรา (ตัวเอง)" ||
-          data.state.settings.partner_b_name !== "เพื่อน (หุ้นส่วน)"
-            ? data.state.settings
-            : localSettings || data.state.settings;
-
-        setTransactions(mergedTxs);
-        setSettings(mergedSettings);
-        setEditNameA(mergedSettings.partner_a_name);
-        setEditNameB(mergedSettings.partner_b_name);
-        saveLocalBackup(
-          mergedTxs,
-          mergedSettings,
-          Array.from(srvDeleted.values())
-        );
-
-        // If local had transactions that server lost (e.g. cold start), sync back to server
-        if (mergedTxs.length > srvTxs.length) {
-          await fetch("/api/finance", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "sync_client_state",
-              transactions: mergedTxs,
-              settings: mergedSettings,
-            }),
-          });
-        }
+      try {
+        const rawTxs = localStorage.getItem(LOCAL_STORAGE_TX_KEY);
+        if (rawTxs) localTxs = JSON.parse(rawTxs) || [];
+        const rawCfg = localStorage.getItem(LOCAL_STORAGE_SETTINGS_KEY);
+        if (rawCfg) localSettings = JSON.parse(rawCfg) || null;
+        const rawDel = localStorage.getItem(LOCAL_STORAGE_DELETED_KEY);
+        if (rawDel) localDeleted = JSON.parse(rawDel) || [];
+      } catch {
+        // ignore
       }
-    } catch {
-      // Fallback to local state silently
-    } finally {
-      setLoading(false);
-    }
-  }, [saveLocalBackup]);
+
+      if (!isBackground && localTxs.length > 0) {
+        setTransactions(localTxs);
+      }
+      if (localSettings) {
+        setSettings(localSettings);
+        setEditNameA(localSettings.partner_a_name);
+        setEditNameB(localSettings.partner_b_name);
+      }
+
+      try {
+        const res = await fetch(`/api/finance?t=${Date.now()}`, {
+          cache: "no-store",
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as FinanceApiResponse;
+
+        if (data.ok && data.state) {
+          const srvTxs = data.state.transactions || [];
+          const srvDeleted = new Set([...(data.state.deleted_ids || [])]);
+
+          // Merge server + local transactions (Server transactions take priority!)
+          const txMap = new Map<string, FinanceTransaction>();
+          srvTxs.forEach((item) => {
+            if (item && item.id && !srvDeleted.has(item.id)) {
+              txMap.set(item.id, item);
+            }
+          });
+          localTxs.forEach((item) => {
+            if (
+              item &&
+              item.id &&
+              !srvDeleted.has(item.id) &&
+              !txMap.has(item.id)
+            ) {
+              txMap.set(item.id, item);
+            }
+          });
+
+          const mergedTxs = Array.from(txMap.values()).sort(
+            (a, b) => (b.created_at || 0) - (a.created_at || 0)
+          );
+
+          const mergedSettings =
+            data.state.settings.partner_a_name !== "เรา (ตัวเอง)" ||
+            data.state.settings.partner_b_name !== "เพื่อน (หุ้นส่วน)"
+              ? data.state.settings
+              : localSettings || data.state.settings;
+
+          setTransactions(mergedTxs);
+          setSettings(mergedSettings);
+          setEditNameA(mergedSettings.partner_a_name);
+          setEditNameB(mergedSettings.partner_b_name);
+          setLastSyncedAt(Date.now());
+          saveLocalBackup(
+            mergedTxs,
+            mergedSettings,
+            Array.from(srvDeleted.values())
+          );
+
+          // If local had transactions that server lost (e.g. cold start), sync back to server
+          if (mergedTxs.length > srvTxs.length) {
+            await fetch("/api/finance", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "sync_client_state",
+                transactions: mergedTxs,
+                settings: mergedSettings,
+              }),
+            });
+          }
+        }
+      } catch {
+        // Fallback to local state silently
+      } finally {
+        setLoading(false);
+      }
+    },
+    [saveLocalBackup]
+  );
 
   useEffect(() => {
     loadFinanceData();
+    const timer = setInterval(() => {
+      loadFinanceData(true);
+    }, 10000); // Auto-sync every 10 seconds!
+    return () => clearInterval(timer);
   }, [loadFinanceData]);
+
+  // Force re-sync directly from server (wipes local cache and reloads live data)
+  const handleForceServerSync = async () => {
+    setIsSyncing(true);
+    try {
+      localStorage.removeItem(LOCAL_STORAGE_TX_KEY);
+      localStorage.removeItem(LOCAL_STORAGE_DELETED_KEY);
+      const res = await fetch(`/api/finance?t=${Date.now()}`, {
+        cache: "no-store",
+      });
+      const data = await res.json();
+      if (data.ok && data.state) {
+        const srv = data.state.transactions || [];
+        setTransactions(srv);
+        setSettings(data.state.settings);
+        setLastSyncedAt(Date.now());
+        saveLocalBackup(srv, data.state.settings, []);
+        showToast(`✅ ดึงข้อมูลสดจากเซิร์ฟเวอร์สำเร็จ (${srv.length} รายการ)!`);
+      }
+    } catch {
+      showToast("❌ ซิงค์ไม่สำเร็จ กรุณาลองใหม่");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   // ============================================================================
   // CORE 50/50 ACCOUNTING ENGINE
@@ -640,6 +684,16 @@ export default function FinancePage() {
 
           <div className="flex flex-wrap items-center gap-2">
             <button
+              onClick={() => loadFinanceData(false)}
+              disabled={isSyncing}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-sky-400/30 bg-sky-500/10 px-3 py-2 text-xs sm:text-sm font-semibold text-sky-200 hover:bg-sky-500/20 transition disabled:opacity-50"
+              title="กดเพื่อดึงยอดล่าสุดทันที (ระบบมี Auto-Sync ทุก 10 วินาที)"
+            >
+              <span className={isSyncing ? "animate-spin inline-block" : ""}>🔄</span>
+              <span>{isSyncing ? "กำลังซิงค์..." : "ซิงค์สด"}</span>
+            </button>
+
+            <button
               onClick={handleCopySummaryReport}
               className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-400/40 bg-emerald-500/15 px-3.5 py-2 text-xs sm:text-sm font-bold text-emerald-200 hover:bg-emerald-500/25 transition"
             >
@@ -658,7 +712,7 @@ export default function FinancePage() {
               className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3.5 py-2 text-xs sm:text-sm font-semibold text-slate-200 hover:bg-white/10 transition"
             >
               <span>⚙️</span>
-              <span>ตั้งชื่อหุ้นส่วน</span>
+              <span>ตั้งค่า / แก้ปัญหาซิงค์</span>
             </button>
           </div>
         </header>
@@ -1523,6 +1577,27 @@ export default function FinancePage() {
               >
                 บันทึกชื่อ
               </button>
+            </div>
+
+            <div className="pt-4 border-t border-white/10 space-y-2">
+              <p className="text-xs font-bold text-slate-400">
+                เครื่องมือแก้ปัญหายอดเงินไม่ตรงกับเพื่อน:
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  handleForceServerSync();
+                  setShowSettingsModal(false);
+                }}
+                disabled={isSyncing}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-sky-500/30 bg-sky-500/15 py-2.5 text-xs font-bold text-sky-200 hover:bg-sky-500/25 transition disabled:opacity-50"
+              >
+                <span>🔄</span>
+                <span>{isSyncing ? "กำลังดึงข้อมูล..." : "ดึงข้อมูลสดจากเซิร์ฟเวอร์ใหม่ทั้งหมด (ล้างแคชเครื่องนี้)"}</span>
+              </button>
+              <p className="text-[11px] text-slate-500">
+                หากหน้าจอของคุณกับเพื่อนยอดไม่เท่ากัน กดปุ่มนี้จะลบแคชเก่าในบราวเซอร์เครื่องนี้ทิ้ง แล้วดึงข้อมูลสดทั้งหมดจากเซิร์ฟเวอร์มาแสดงทันที
+              </p>
             </div>
           </form>
         </div>

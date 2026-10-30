@@ -70,17 +70,20 @@ if (!globalThis.__ROBLOX_FINANCE_STATE__) {
 
 function hasVercelKV(): boolean {
   return Boolean(
-    process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN
+    (process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL) &&
+      (process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN)
   );
 }
 
 async function kvCommand<T = unknown>(command: unknown[]): Promise<T | null> {
-  const url = process.env.KV_REST_API_URL;
-  const token = process.env.KV_REST_API_TOKEN;
+  const url =
+    process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || "";
+  const token =
+    process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || "";
   if (!url || !token) return null;
 
   try {
-    const res = await fetch(url, {
+    const res = await fetch(url.replace(/\/$/, ""), {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -146,6 +149,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
 };
 
 export async function OPTIONS() {
