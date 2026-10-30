@@ -199,11 +199,7 @@ export default function FinancePage() {
             (a, b) => (b.created_at || 0) - (a.created_at || 0)
           );
 
-          const mergedSettings =
-            data.state.settings.partner_a_name !== "เรา (ตัวเอง)" ||
-            data.state.settings.partner_b_name !== "เพื่อน (หุ้นส่วน)"
-              ? data.state.settings
-              : localSettings || data.state.settings;
+          const mergedSettings = data.state.settings;
 
           setTransactions(mergedTxs);
           setSettings(mergedSettings);
