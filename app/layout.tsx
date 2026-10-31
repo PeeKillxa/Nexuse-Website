@@ -3,16 +3,15 @@ import "./globals.css";
 import Navbar from "./components/Navbar";
 
 export const metadata: Metadata = {
-  title: "Roblox Multi-Account Farm Dashboard | Real-Time Telemetry",
+  title: "NEXUSE | Roblox Farm Operations",
   description:
-    "Real-time Cyberpunk Multi-Account Farm Telemetry Dashboard for Roblox — Monitor Gems, Gold, Levels, Ping, FPS & Bot Status from anywhere.",
+    "แดชบอร์ดติดตามสถานะบัญชีและสถิติฟาร์ม Roblox แบบเรียลไทม์",
 };
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
-  themeColor: "#06060f",
+  themeColor: "#080d13",
 };
 
 export default function RootLayout({
@@ -22,7 +21,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="th" className="dark">
-      <body className="min-h-screen bg-[#06060f] text-slate-100 antialiased selection:bg-cyan-500/30 selection:text-cyan-200">
+      <body className="min-h-screen bg-[#080d13] text-slate-100 antialiased">
         <Navbar />
         {children}
       </body>

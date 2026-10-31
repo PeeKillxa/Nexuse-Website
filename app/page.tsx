@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import Link from "next/link";
 
 // ============================================================================
 // TYPES & INTERFACES
@@ -1126,23 +1125,15 @@ end)
 -- ดึงข้อมูลและส่งเข้าเว็บทุก 15 วินาที (หรือใช้ลิงก์โหลดบรรทัดเดียวด้านบนได้เลย!)`;
 
   return (
-    <div className="relative min-h-screen bg-[#06060f] text-slate-100 selection:bg-cyan-500/30 selection:text-cyan-200 overflow-x-hidden">
-      {/* ===================================================================
-          CYBERPUNK AMBIENT BACKGROUND GLOWS & GRID
-      =================================================================== */}
-      <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
-        <div className="absolute -top-40 -left-40 h-[520px] w-[520px] rounded-full bg-purple-700/20 blur-[140px]" />
-        <div className="absolute top-1/4 -right-40 h-[480px] w-[480px] rounded-full bg-cyan-500/15 blur-[140px]" />
-        <div className="absolute -bottom-48 left-1/3 h-[500px] w-[500px] rounded-full bg-emerald-500/10 blur-[150px]" />
-        <div
-          className="absolute inset-0 opacity-[0.035]"
-          style={{
-            backgroundImage:
-              "linear-gradient(to right, #38bdf8 1px, transparent 1px), linear-gradient(to bottom, #38bdf8 1px, transparent 1px)",
-            backgroundSize: "48px 48px",
-          }}
-        />
-      </div>
+    <div className="relative min-h-screen overflow-x-hidden bg-[#080d13] text-slate-100 selection:bg-cyan-500/30 selection:text-cyan-100">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none fixed inset-0 z-0"
+        style={{
+          background:
+            "radial-gradient(ellipse at 50% -20%, rgba(34, 211, 238, 0.09), transparent 52%)",
+        }}
+      />
 
       {/* ===================================================================
           FLOATING TOAST NOTIFICATIONS (Gem Gain, Win Gain & Offline Alerts)
@@ -1185,87 +1176,79 @@ end)
       {/* ===================================================================
           MAIN CONTAINER
       =================================================================== */}
-      <main className="relative z-10 mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 space-y-6">
+      <main className="relative z-10 mx-auto max-w-screen-2xl space-y-6 px-4 py-6 sm:px-6 lg:px-8">
         {/* TOP BRANDING BAR */}
-        <header className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between rounded-3xl border border-white/10 bg-slate-950/60 p-5 sm:p-6 backdrop-blur-2xl shadow-[0_0_50px_-12px_rgba(139,92,246,0.25)]">
-          <div className="flex items-start sm:items-center gap-4">
-            <div className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-500 via-purple-600 to-emerald-500 p-[1.5px] shadow-lg shadow-cyan-500/20">
-              <div className="flex h-full w-full items-center justify-center rounded-[14px] bg-[#090919]">
-                <span className="text-2xl">🤖</span>
-              </div>
-              <span className="absolute -bottom-1 -right-1 flex h-4 w-4">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-4 w-4 bg-emerald-500 border-2 border-[#090919]" />
-              </span>
+        <header className="flex flex-col gap-5 rounded-2xl border border-white/[0.08] bg-[#111820]/95 p-5 shadow-[0_14px_42px_-34px_rgba(0,0,0,0.9)] sm:p-7 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 items-start gap-4">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-cyan-300/20 bg-cyan-300/[0.08] text-lg font-black tracking-tight text-cyan-100">
+              N
             </div>
 
-            <div>
+            <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="inline-flex items-center gap-1.5 rounded-full border border-cyan-400/30 bg-cyan-500/10 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-cyan-300">
-                  NEXUS TELEMETRY v2.5
+                <span className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400">
+                  NEXUSE <span className="text-slate-600">/</span> FARM MONITOR
                 </span>
-                <span className="inline-flex items-center gap-1 rounded-full border border-purple-400/30 bg-purple-500/10 px-2.5 py-0.5 text-[11px] font-medium text-purple-300">
-                  Storage: {storageMode === "vercel-kv" ? "Vercel KV Redis" : "In-Memory Cache"}
-                </span>
-                <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-medium text-emerald-300">
-                  Timeout: {OFFLINE_TIMEOUT_SECONDS}s (Teleport Safe)
+                <span
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold ${
+                    storageMode === "vercel-kv"
+                      ? "border-emerald-400/20 bg-emerald-400/[0.07] text-emerald-200"
+                      : "border-amber-300/25 bg-amber-300/[0.07] text-amber-100"
+                  }`}
+                  title={
+                    storageMode === "vercel-kv"
+                      ? "กำลังใช้ KV สำหรับจัดเก็บข้อมูล"
+                      : "กำลังใช้หน่วยความจำชั่วคราว ข้อมูลอาจหายเมื่อ instance เริ่มใหม่"
+                  }
+                >
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full ${
+                      storageMode === "vercel-kv" ? "bg-emerald-300" : "bg-amber-300"
+                    }`}
+                  />
+                  {storageMode === "vercel-kv"
+                    ? "จัดเก็บผ่าน KV"
+                    : "ข้อมูลชั่วคราว · อาจหายหลังรีสตาร์ต"}
                 </span>
               </div>
-              <h1 className="mt-1 text-xl sm:text-2xl md:text-3xl font-extrabold tracking-tight bg-gradient-to-r from-white via-cyan-200 to-purple-300 bg-clip-text text-transparent">
-                Roblox Multi-Account Farm Dashboard
+              <h1 className="mt-2 text-2xl font-bold tracking-tight text-white sm:text-3xl">
+                ภาพรวมฟาร์ม
               </h1>
-              <p className="text-xs sm:text-sm text-slate-400 mt-0.5">
-                ระบบมอนิเตอร์บอทฟาร์มเรียลไทม์ เช็คเพชร ทอง เลเวล สถิติชนะ/หลุด และสถานะออนไลน์ครบทุกจอ
+              <p className="mt-1 text-sm text-slate-400">
+                ดูสถานะบัญชีและสถิติการฟาร์มทั้งหมดในที่เดียว
               </p>
             </div>
           </div>
 
-          {/* Action Buttons: Customer Orders + Finance Page + Log Modal + Script Modal */}
-          <div className="flex flex-wrap items-center gap-2.5">
-            <Link
-              href="/customers"
-              className="inline-flex items-center gap-2 rounded-xl border border-blue-400/45 bg-blue-500/15 px-4 py-2.5 text-xs sm:text-sm font-bold text-blue-200 hover:bg-blue-500/25 hover:border-blue-300 transition shadow-lg shadow-blue-500/15"
-            >
-              <span>👥</span>
-              <span>บัญชีลูกค้า</span>
-            </Link>
-
-            <Link
-              href="/finance"
-              className="inline-flex items-center gap-2 rounded-xl border border-emerald-400/45 bg-emerald-500/15 px-4 py-2.5 text-xs sm:text-sm font-bold text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-300 transition shadow-lg shadow-emerald-500/15"
-            >
-              <span>💰</span>
-              <span>จัดการการเงิน (หาร 2)</span>
-            </Link>
-
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => setShowLogModal(true)}
-              className="inline-flex items-center gap-2 rounded-xl border border-amber-400/45 bg-amber-500/15 px-4 py-2.5 text-xs sm:text-sm font-bold text-amber-200 hover:bg-amber-500/25 hover:border-amber-300 transition shadow-lg shadow-amber-500/15"
+              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3.5 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.08]"
             >
-              <span>📋</span>
-              <span>ประวัติ Log ({visibleLogEntries.length})</span>
+              <span aria-hidden="true">▤</span>
+              <span>ประวัติ <span className="text-slate-400">({visibleLogEntries.length})</span></span>
             </button>
 
             <button
               onClick={() => setShowLuauModal(true)}
-              className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/40 bg-cyan-500/15 px-4 py-2.5 text-xs sm:text-sm font-semibold text-cyan-200 hover:bg-cyan-500/25 hover:border-cyan-300 transition shadow-lg shadow-cyan-500/10"
+              className="inline-flex items-center gap-2 rounded-xl bg-cyan-300 px-3.5 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-cyan-200"
             >
-              <span>📜</span>
-              <span>รับสคริปต์ Luau (v2.5)</span>
+              <span aria-hidden="true">&lt;/&gt;</span>
+              <span>สคริปต์ Luau</span>
             </button>
           </div>
         </header>
 
         {/* ===================================================================
-            TOP SUMMARY HEADER BAR (6 Neon Glass Cards)
+            TOP SUMMARY (6 key farm metrics)
         =================================================================== */}
-        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <section className="dashboard-summary-grid grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-3">
           {/* 1. TOTAL COMBINED GEMS */}
           <div className="group relative overflow-hidden rounded-3xl border border-cyan-500/30 bg-gradient-to-br from-slate-900/90 via-slate-900/70 to-cyan-950/40 p-5 backdrop-blur-xl shadow-[0_0_35px_-10px_rgba(6,182,212,0.3)]">
             <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-cyan-500/15 blur-2xl group-hover:bg-cyan-400/25 transition" />
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-cyan-300/90">
-                Total Combined Gems
+                เพชรรวม
               </span>
               <span className="flex h-10 w-10 items-center justify-center rounded-2xl border border-cyan-400/30 bg-cyan-500/15 text-xl shadow-inner">
                 💎
@@ -1294,7 +1277,7 @@ end)
             <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-pink-500/15 blur-2xl group-hover:bg-pink-400/25 transition" />
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-pink-300/90">
-                Total AprilCoins
+                AprilCoins รวม
               </span>
               <span className="flex h-10 w-10 items-center justify-center rounded-2xl border border-pink-400/30 bg-pink-500/15 text-xl shadow-inner">
                 🌸
@@ -1318,7 +1301,7 @@ end)
             <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-emerald-500/15 blur-2xl group-hover:bg-emerald-400/25 transition" />
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-emerald-300/90">
-                Active Farm Nodes
+                บัญชีออนไลน์
               </span>
               <span className="flex h-10 w-10 items-center justify-center rounded-2xl border border-emerald-400/30 bg-emerald-500/15 text-lg">
                 🟢
@@ -1326,7 +1309,7 @@ end)
             </div>
             <div className="mt-3 flex items-baseline gap-2">
               <p className="text-2xl sm:text-3xl font-black tracking-tight text-white tabular-nums">
-                Online: {liveSummary.online_count}{" "}
+                ออนไลน์ {liveSummary.online_count}{" "}
                 <span className="text-base font-semibold text-slate-400">
                   / {liveSummary.total_accounts}
                 </span>
@@ -1361,7 +1344,7 @@ end)
             <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-amber-500/15 blur-2xl group-hover:bg-amber-400/25 transition" />
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-amber-300/90">
-                Match Wins / Disconnects
+                ชนะ / หลุดเกม
               </span>
               <span className="flex h-10 w-10 items-center justify-center rounded-2xl border border-amber-400/30 bg-amber-500/15 text-xl">
                 🏆
@@ -1372,7 +1355,7 @@ end)
                 <p className="text-2xl sm:text-3xl font-black tracking-tight text-emerald-300 tabular-nums">
                   {formatNumber(liveSummary.total_wins)}{" "}
                   <span className="text-xs font-bold uppercase text-emerald-400/80">
-                    Wins
+                    ชนะ
                   </span>
                 </p>
               </div>
@@ -1398,7 +1381,7 @@ end)
             <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-amber-500/15 blur-2xl group-hover:bg-amber-400/25 transition" />
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-amber-300/90">
-                Total Combined Gold
+                Gold รวม
               </span>
               <span className="flex h-10 w-10 items-center justify-center rounded-2xl border border-amber-400/30 bg-amber-500/15 text-xl">
                 🪙
@@ -1422,7 +1405,7 @@ end)
             <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-purple-500/15 blur-2xl group-hover:bg-purple-400/25 transition" />
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-purple-300/90">
-                Total Farm Uptime
+                เวลาทำงานรวม
               </span>
               <span className="flex h-10 w-10 items-center justify-center rounded-2xl border border-purple-400/30 bg-purple-500/15 text-xl">
                 ⏱️
@@ -1445,7 +1428,7 @@ end)
         {/* ===================================================================
             CONTROL BAR (Search, Sort, Status Filter, Auto-Refresh, Audio Alert)
         =================================================================== */}
-        <section className="rounded-3xl border border-white/10 bg-slate-900/65 p-4 sm:p-5 backdrop-blur-2xl shadow-xl space-y-4">
+        <section className="space-y-4 rounded-2xl border border-white/[0.08] bg-[#111820]/95 p-4 shadow-[0_12px_32px_-26px_rgba(0,0,0,0.9)] sm:p-5">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             {/* Search Box & Status Pills */}
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 flex-1">
@@ -1673,7 +1656,7 @@ end)
             )}
           </div>
         ) : (
-          <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
+          <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {filteredAndSortedAccounts.map((acc) => {
               const isOnline = acc.effective_status === "ONLINE";
               const secondsAgo = acc.seconds_since_update ?? 0;
@@ -1697,22 +1680,22 @@ end)
               return (
                 <article
                   key={acc.user_id}
-                  className={`group relative flex flex-col justify-between overflow-hidden rounded-3xl border p-5 sm:p-6 backdrop-blur-2xl transition-all duration-300 ${
+                  data-online={isOnline ? "true" : "false"}
+                  data-flashing={isGemFlashing || isWinFlashing ? "true" : "false"}
+                  className={`account-card group relative flex flex-col justify-between overflow-hidden border p-5 sm:p-6 transition-all duration-300 ${
                     isGemFlashing || isWinFlashing
-                      ? "border-emerald-400/80 bg-slate-900/85 shadow-[0_0_40px_-5px_rgba(16,185,129,0.5)] animate-gem-flash"
+                      ? "border-emerald-400/70"
                       : isOnline
-                      ? "border-white/10 bg-slate-900/65 hover:border-cyan-400/50 hover:shadow-[0_0_35px_-10px_rgba(6,182,212,0.3)]"
-                      : "border-rose-500/35 bg-slate-950/75 opacity-90 shadow-[0_0_25px_-10px_rgba(244,63,94,0.25)]"
+                      ? "border-white/10"
+                      : "border-rose-500/25"
                   }`}
                 >
-                  {/* Top Neon Accent Line */}
+                  {/* Subtle status accent */}
                   <div
-                    className={`absolute inset-x-0 top-0 h-1 ${
+                    className={`absolute inset-x-0 top-0 h-px ${
                       isGemFlashing || isWinFlashing
-                        ? "bg-gradient-to-r from-emerald-400 via-cyan-300 to-emerald-400"
-                        : isOnline
-                        ? "bg-gradient-to-r from-cyan-500 via-purple-500 to-emerald-400"
-                        : "bg-gradient-to-r from-rose-600 via-red-500 to-orange-500"
+                        ? "bg-emerald-300/70"
+                        : "bg-white/10"
                     }`}
                   />
 
@@ -1723,10 +1706,10 @@ end)
                         {/* Avatar Headshot with Online/Offline Ring */}
                         <div className="relative shrink-0">
                           <div
-                            className={`h-16 w-16 rounded-2xl p-[2px] ${
+                            className={`h-16 w-16 rounded-2xl border p-0.5 ${
                               isOnline
-                                ? "bg-gradient-to-br from-emerald-400 via-cyan-400 to-purple-500 shadow-lg shadow-emerald-500/20"
-                                : "bg-gradient-to-br from-rose-500 to-slate-700"
+                                ? "border-emerald-400/50"
+                                : "border-rose-400/40"
                             }`}
                           >
                             <img
@@ -1790,7 +1773,7 @@ end)
                             )}
 
                             {/* Device / Emu Badge */}
-                            <span className="inline-flex items-center gap-1 rounded-full border border-purple-400/35 bg-purple-500/15 px-2 py-0.5 text-[10px] font-bold text-purple-200">
+                            <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-semibold text-slate-300">
                               <span>{acc.device_name?.startsWith("Android") ? "📱" : "💻"}</span>
                               <span>{acc.device_name || "PC"}</span>
                             </span>
@@ -1806,8 +1789,8 @@ end)
 
                       {/* Level Badge, Log Save Toggle & Delete Button */}
                       <div className="flex flex-col items-end gap-1.5 shrink-0">
-                        <div className="rounded-2xl border border-purple-400/40 bg-gradient-to-br from-purple-500/25 to-cyan-500/15 px-3 py-1.5 text-right shadow-inner">
-                          <span className="block text-[10px] font-bold uppercase tracking-wider text-purple-300">
+                        <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-1.5 text-right">
+                            <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400">
                             LEVEL
                           </span>
                           <span className="text-base sm:text-lg font-black text-white tabular-nums">
@@ -1890,7 +1873,7 @@ end)
                         </span>
                       </div>
 
-                      <div className="rounded-2xl border border-pink-500/30 bg-gradient-to-br from-fuchsia-950/35 to-slate-950/80 p-3.5">
+                      <div className="rounded-2xl border border-white/10 bg-white/[0.025] p-3.5">
                         <div className="flex items-center justify-between gap-1">
                           <span className="text-[11px] font-bold uppercase tracking-wider text-pink-300 flex items-center gap-1">
                             <span>🌸</span>
@@ -1915,7 +1898,7 @@ end)
                         className={`rounded-2xl border px-3.5 py-2.5 transition-all ${
                           isWinFlashing
                             ? "border-emerald-400 bg-emerald-950/80 shadow-[0_0_20px_rgba(16,185,129,0.35)]"
-                            : "border-emerald-500/25 bg-emerald-950/25"
+                            : "border-white/10 bg-white/[0.025]"
                         }`}
                       >
                         <div className="flex items-center justify-between">
@@ -1936,7 +1919,7 @@ end)
                         </p>
                       </div>
 
-                      <div className="rounded-2xl border border-rose-500/25 bg-rose-950/20 px-3.5 py-2.5">
+                      <div className="rounded-2xl border border-white/10 bg-white/[0.025] px-3.5 py-2.5">
                         <span className="text-[11px] font-bold text-rose-300 flex items-center gap-1">
                           <span>🔌</span> หลุดเกม (Disconnects)
                         </span>
@@ -1951,7 +1934,7 @@ end)
 
                     {/* GOLD & EXTRA STATS ROW */}
                     <div className="mt-2.5 grid grid-cols-2 gap-2.5">
-                      <div className="rounded-2xl border border-white/10 bg-slate-950/60 px-3.5 py-2.5">
+                      <div className="rounded-2xl border border-white/10 bg-white/[0.025] px-3.5 py-2.5">
                         <span className="text-[11px] font-semibold text-amber-300/90 flex items-center gap-1">
                           <span>🪙</span> Gold
                         </span>
@@ -1960,7 +1943,7 @@ end)
                         </p>
                       </div>
 
-                      <div className="rounded-2xl border border-white/10 bg-slate-950/60 px-3.5 py-2.5">
+                      <div className="rounded-2xl border border-white/10 bg-white/[0.025] px-3.5 py-2.5">
                         <span className="text-[11px] font-semibold text-purple-300/90 flex items-center gap-1">
                           <span>🎲</span> Extra Stats
                         </span>

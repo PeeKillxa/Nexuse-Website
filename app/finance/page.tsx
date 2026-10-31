@@ -34,12 +34,25 @@ interface FinanceSettings {
 interface FinanceApiResponse {
   ok: boolean;
   storage_mode?: string;
+  error?: string;
   state?: {
     settings: FinanceSettings;
     transactions: FinanceTransaction[];
     deleted_ids: string[];
     updated_at: number;
   };
+}
+
+async function requestFinance(
+  input: RequestInfo | URL,
+  init?: RequestInit
+): Promise<FinanceApiResponse> {
+  const response = await fetch(input, init);
+  const data = (await response.json()) as FinanceApiResponse;
+  if (!response.ok || !data.ok) {
+    throw new Error(data.error || `HTTP ${response.status}`);
+  }
+  return data;
 }
 
 // ============================================================================
@@ -84,6 +97,8 @@ export default function FinancePage() {
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [lastSyncedAt, setLastSyncedAt] = useState<number>(Date.now());
+  const [storageMode, setStorageMode] = useState<string>("unknown");
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [copiedSummary, setCopiedSummary] = useState<boolean>(false);
 
@@ -114,6 +129,25 @@ export default function FinancePage() {
     }, 3500);
   }, []);
 
+  const showWriteResult = (data: FinanceApiResponse, successMessage: string) => {
+    const mode = data.storage_mode || "in-memory";
+    setStorageMode(mode);
+    setSyncError(null);
+    showToast(
+      mode === "vercel-kv"
+        ? `✅ ${successMessage} และแชร์กับเพื่อนแล้ว`
+        : `⚠️ ${successMessage} แต่ยังไม่ได้แชร์กับเพื่อน`
+    );
+  };
+
+  const showWriteFailure = () => {
+    setStorageMode("error");
+    setSyncError(
+      "ส่งรายการไปยังเซิร์ฟเวอร์ไม่สำเร็จ รายการยังอยู่ในข้อมูลสำรองของเบราว์เซอร์นี้"
+    );
+    showToast("⚠️ บันทึกไว้ในเบราว์เซอร์นี้ แต่ยังซิงก์ขึ้นเซิร์ฟเวอร์ไม่ได้");
+  };
+
   // Save to localStorage helper
   const saveLocalBackup = useCallback(
     (
@@ -142,6 +176,7 @@ export default function FinancePage() {
   // Load & Sync Data
   const loadFinanceData = useCallback(
     async (isBackground = false) => {
+      let loadedFromServer = false;
       let localTxs: FinanceTransaction[] = [];
       let localSettings: FinanceSettings | null = null;
       let localDeleted: string[] = [];
@@ -167,20 +202,25 @@ export default function FinancePage() {
       }
 
       try {
-        const res = await fetch(`/api/finance?t=${Date.now()}`, {
+        const data = await requestFinance(`/api/finance?t=${Date.now()}`, {
           cache: "no-store",
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = (await res.json()) as FinanceApiResponse;
+        setStorageMode(data.storage_mode || "in-memory");
+        setSyncError(null);
 
         if (data.ok && data.state) {
+          loadedFromServer = true;
           const srvTxs = data.state.transactions || [];
           const srvDeleted = new Set([...(data.state.deleted_ids || [])]);
+          const mergedDeleted = new Set([
+            ...Array.from(srvDeleted),
+            ...localDeleted,
+          ]);
 
           // Merge server + local transactions (Server transactions take priority!)
           const txMap = new Map<string, FinanceTransaction>();
           srvTxs.forEach((item) => {
-            if (item && item.id && !srvDeleted.has(item.id)) {
+            if (item && item.id && !mergedDeleted.has(item.id)) {
               txMap.set(item.id, item);
             }
           });
@@ -188,7 +228,7 @@ export default function FinancePage() {
             if (
               item &&
               item.id &&
-              !srvDeleted.has(item.id) &&
+              !mergedDeleted.has(item.id) &&
               !txMap.has(item.id)
             ) {
               txMap.set(item.id, item);
@@ -209,27 +249,35 @@ export default function FinancePage() {
           saveLocalBackup(
             mergedTxs,
             mergedSettings,
-            Array.from(srvDeleted.values())
+            Array.from(mergedDeleted.values())
           );
 
-          // If local had transactions that server lost (e.g. cold start), sync back to server
-          if (mergedTxs.length > srvTxs.length) {
-            await fetch("/api/finance", {
+          // Merge local backup transactions/deletions into the shared server state.
+          if (
+            mergedTxs.length > srvTxs.length ||
+            Array.from(mergedDeleted).some((id) => !srvDeleted.has(id))
+          ) {
+            await requestFinance("/api/finance", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 action: "sync_client_state",
                 transactions: mergedTxs,
+                deleted_ids: Array.from(mergedDeleted),
                 settings: mergedSettings,
               }),
             });
           }
         }
       } catch {
-        // Fallback to local state silently
+        setStorageMode("error");
+        setSyncError(
+          "เชื่อมต่อหรือบันทึกข้อมูลบนเซิร์ฟเวอร์ไม่สำเร็จ ขณะนี้กำลังแสดงข้อมูลสำรองในเบราว์เซอร์"
+        );
       } finally {
         setLoading(false);
       }
+      return loadedFromServer;
     },
     [saveLocalBackup]
   );
@@ -242,24 +290,16 @@ export default function FinancePage() {
     return () => clearInterval(timer);
   }, [loadFinanceData]);
 
-  // Force re-sync directly from server (wipes local cache and reloads live data)
+  // Refresh the shared state while preserving and merging this browser's backup.
   const handleForceServerSync = async () => {
     setIsSyncing(true);
     try {
-      localStorage.removeItem(LOCAL_STORAGE_TX_KEY);
-      localStorage.removeItem(LOCAL_STORAGE_DELETED_KEY);
-      const res = await fetch(`/api/finance?t=${Date.now()}`, {
-        cache: "no-store",
-      });
-      const data = await res.json();
-      if (data.ok && data.state) {
-        const srv = data.state.transactions || [];
-        setTransactions(srv);
-        setSettings(data.state.settings);
-        setLastSyncedAt(Date.now());
-        saveLocalBackup(srv, data.state.settings, []);
-        showToast(`✅ ดึงข้อมูลสดจากเซิร์ฟเวอร์สำเร็จ (${srv.length} รายการ)!`);
-      }
+      const synced = await loadFinanceData(false);
+      showToast(
+        synced
+          ? "✅ รวมรายการจากเซิร์ฟเวอร์กับข้อมูลสำรองแล้ว โดยไม่ล้างประวัติในเครื่อง"
+          : "❌ ซิงค์ไม่สำเร็จ ข้อมูลสำรองในเครื่องยังอยู่"
+      );
     } catch {
       showToast("❌ ซิงค์ไม่สำเร็จ กรุณาลองใหม่");
     } finally {
@@ -468,7 +508,7 @@ export default function FinancePage() {
     setNoteInput("");
 
     try {
-      await fetch("/api/finance", {
+      const result = await requestFinance("/api/finance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -476,11 +516,11 @@ export default function FinancePage() {
           transaction: newTx,
         }),
       });
+      showWriteResult(result, "บันทึกรายการแล้ว");
     } catch {
-      // Saved in localStorage already
+      showWriteFailure();
     } finally {
       setSubmitting(false);
-      showToast("✅ บันทึกรายการเรียบร้อยแล้ว");
     }
   };
 
@@ -514,7 +554,7 @@ export default function FinancePage() {
     saveLocalBackup(nextTxs);
 
     try {
-      await fetch("/api/finance", {
+      const result = await requestFinance("/api/finance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -522,13 +562,10 @@ export default function FinancePage() {
           transaction: settleTx,
         }),
       });
+      showWriteResult(result, "บันทึกยอดเคลียร์แล้ว");
     } catch {
-      // ignore
+      showWriteFailure();
     }
-
-    showToast(
-      `✅ บันทึกโอนเคลียร์ยอด ฿${formatMoney(summary.settlementAmount)} เรียบร้อย!`
-    );
   };
 
   const handleDeleteTransaction = async (id: string) => {
@@ -541,13 +578,13 @@ export default function FinancePage() {
       if (!delList.includes(id)) delList.push(id);
       saveLocalBackup(nextTxs, undefined, delList);
 
-      await fetch(`/api/finance?id=${encodeURIComponent(id)}`, {
+      const result = await requestFinance(`/api/finance?id=${encodeURIComponent(id)}`, {
         method: "DELETE",
       });
+      showWriteResult(result, "ลบรายการแล้ว");
     } catch {
-      // ignore
+      showWriteFailure();
     }
-    showToast("🗑️ ลบรายการแล้ว");
   };
 
   const handleClearAllTransactions = async () => {
@@ -565,11 +602,13 @@ export default function FinancePage() {
     saveLocalBackup([], undefined, allIds);
 
     try {
-      await fetch("/api/finance?mode=all", { method: "DELETE" });
+      const result = await requestFinance("/api/finance?mode=all", {
+        method: "DELETE",
+      });
+      showWriteResult(result, "ล้างประวัติแล้ว");
     } catch {
-      // ignore
+      showWriteFailure();
     }
-    showToast("🗑️ ล้างประวัติเริ่มรอบบัญชีใหม่เรียบร้อย");
   };
 
   const handleSavePartnerNames = async (e: React.FormEvent) => {
@@ -583,7 +622,7 @@ export default function FinancePage() {
     setShowSettingsModal(false);
 
     try {
-      await fetch("/api/finance", {
+      const result = await requestFinance("/api/finance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -591,10 +630,10 @@ export default function FinancePage() {
           settings: newSettings,
         }),
       });
+      showWriteResult(result, "บันทึกชื่อหุ้นส่วนแล้ว");
     } catch {
-      // ignore
+      showWriteFailure();
     }
-    showToast("✅ บันทึกชื่อหุ้นส่วนเรียบร้อย");
   };
 
   const handleCopySummaryReport = () => {
@@ -712,6 +751,40 @@ export default function FinancePage() {
             </button>
           </div>
         </header>
+
+        {storageMode === "in-memory" && (
+          <section
+            role="alert"
+            className="rounded-xl border border-amber-300/25 bg-amber-300/[0.06] px-4 py-3 text-sm text-amber-100"
+          >
+            <p className="font-semibold">ยังไม่ได้เปิดใช้ฐานข้อมูลกลาง</p>
+            <p className="mt-1 text-xs leading-relaxed text-amber-100/80">
+              ตอนนี้ยอดและประวัติอาจไม่ตรงกันระหว่างคุณกับเพื่อน เพราะระบบเก็บข้อมูลไว้ในหน่วยความจำชั่วคราวของเซิร์ฟเวอร์
+              ต้องเชื่อม Upstash Redis กับโปรเจกต์ Vercel แล้ว deploy ใหม่
+            </p>
+          </section>
+        )}
+
+        {storageMode === "vercel-kv" && !syncError && (
+          <section
+            role="status"
+            className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-300/15 bg-emerald-300/[0.04] px-4 py-2.5 text-xs text-emerald-100/90"
+          >
+            <span>ยอดและประวัติกำลังอ่าน/เขียนผ่านฐานข้อมูลกลาง</span>
+            <span className="text-emerald-100/60">
+              ซิงก์ล่าสุด {formatThaiDateTime(Math.floor(lastSyncedAt / 1000))}
+            </span>
+          </section>
+        )}
+
+        {syncError && (
+          <section
+            role="alert"
+            className="rounded-xl border border-rose-400/25 bg-rose-400/[0.06] px-4 py-3 text-sm text-rose-100"
+          >
+            {syncError}
+          </section>
+        )}
 
         {/* ===================================================================
             HERO SETTLEMENT BANNER (ใครต้องโอนให้ใครตอนนี้)
@@ -1599,10 +1672,10 @@ export default function FinancePage() {
                 className="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-sky-500/30 bg-sky-500/15 py-2.5 text-xs font-bold text-sky-200 hover:bg-sky-500/25 transition disabled:opacity-50"
               >
                 <span>🔄</span>
-                <span>{isSyncing ? "กำลังดึงข้อมูล..." : "ดึงข้อมูลสดจากเซิร์ฟเวอร์ใหม่ทั้งหมด (ล้างแคชเครื่องนี้)"}</span>
+                <span>{isSyncing ? "กำลังซิงค์..." : "รวมข้อมูลเครื่องนี้กับเซิร์ฟเวอร์"}</span>
               </button>
               <p className="text-[11px] text-slate-500">
-                หากหน้าจอของคุณกับเพื่อนยอดไม่เท่ากัน กดปุ่มนี้จะลบแคชเก่าในบราวเซอร์เครื่องนี้ทิ้ง แล้วดึงข้อมูลสดทั้งหมดจากเซิร์ฟเวอร์มาแสดงทันที
+                ปุ่มนี้จะรวมรายการที่ยังอยู่ในเครื่องกับข้อมูลบนเซิร์ฟเวอร์ โดยไม่ล้างประวัติสำรองในเบราว์เซอร์
               </p>
             </div>
           </form>

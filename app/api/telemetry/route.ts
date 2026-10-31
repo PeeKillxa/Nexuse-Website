@@ -147,9 +147,15 @@ const CORS_HEADERS = {
 
 function getKvConfig(): { url: string; token: string } | null {
   const url =
-    process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || "";
+    process.env.KV_REST_API_URL ||
+    process.env.UPSTASH_REDIS_REST_URL ||
+    process.env.UPSTASH_REDIS_REST_KV_REST_API_URL ||
+    "";
   const token =
-    process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || "";
+    process.env.KV_REST_API_TOKEN ||
+    process.env.UPSTASH_REDIS_REST_TOKEN ||
+    process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN ||
+    "";
   if (url && token) {
     return { url: url.replace(/\/$/, ""), token };
   }

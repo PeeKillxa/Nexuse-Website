@@ -71,76 +71,115 @@ if (!globalThis.__ROBLOX_FINANCE_STATE__) {
 
 function hasVercelKV(): boolean {
   return Boolean(
-    (process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL) &&
-      (process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN)
+    (process.env.KV_REST_API_URL ||
+      process.env.UPSTASH_REDIS_REST_URL ||
+      process.env.UPSTASH_REDIS_REST_KV_REST_API_URL) &&
+      (process.env.KV_REST_API_TOKEN ||
+        process.env.UPSTASH_REDIS_REST_TOKEN ||
+        process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN)
   );
 }
 
 async function kvCommand<T = unknown>(command: unknown[]): Promise<T | null> {
   const url =
-    process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || "";
+    process.env.KV_REST_API_URL ||
+    process.env.UPSTASH_REDIS_REST_URL ||
+    process.env.UPSTASH_REDIS_REST_KV_REST_API_URL ||
+    "";
   const token =
-    process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || "";
-  if (!url || !token) return null;
+    process.env.KV_REST_API_TOKEN ||
+    process.env.UPSTASH_REDIS_REST_TOKEN ||
+    process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN ||
+    "";
+  if (!url || !token) throw new Error("Shared finance storage is not configured");
 
-  try {
-    const res = await fetch(url.replace(/\/$/, ""), {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(command),
-      cache: "no-store",
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { result?: T };
-    return data.result ?? null;
-  } catch {
-    return null;
+  const res = await fetch(url.replace(/\/$/, ""), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(command),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`Shared finance storage returned HTTP ${res.status}`);
   }
+
+  const data = (await res.json()) as { result?: T; error?: string };
+  if (data.error) throw new Error(`Shared finance storage: ${data.error}`);
+  return data.result ?? null;
 }
 
 async function loadFinanceState(): Promise<FinanceState> {
-  // 1. Try persistent file storage first (NAS / local disk)
+  if (hasVercelKV()) {
+    const raw = await kvCommand<string>(["GET", KV_FINANCE_KEY]);
+    if (raw !== null) {
+      const parsed =
+        typeof raw === "string" ? (JSON.parse(raw) as FinanceState) : raw;
+      if (!parsed || !Array.isArray(parsed.transactions)) {
+        throw new Error("Shared finance storage contains invalid data");
+      }
+      const state: FinanceState = {
+        settings: parsed.settings || { ...defaultFinanceState.settings },
+        transactions: [...parsed.transactions],
+        deleted_ids: Array.isArray(parsed.deleted_ids)
+          ? [...parsed.deleted_ids]
+          : [],
+        updated_at: parsed.updated_at || Math.floor(Date.now() / 1000),
+      };
+      globalThis.__ROBLOX_FINANCE_STATE__ = {
+        ...state,
+        settings: { ...state.settings },
+        transactions: [...state.transactions],
+        deleted_ids: [...state.deleted_ids],
+      };
+      return state;
+    }
+
+    const fileState = readStorageFile<FinanceState | null>("finance.json", null);
+    const initialState: FinanceState =
+      fileState && Array.isArray(fileState.transactions)
+        ? {
+            settings: fileState.settings || { ...defaultFinanceState.settings },
+            transactions: [...fileState.transactions],
+            deleted_ids: Array.isArray(fileState.deleted_ids)
+              ? [...fileState.deleted_ids]
+              : [],
+            updated_at: fileState.updated_at || Math.floor(Date.now() / 1000),
+          }
+        : {
+            settings: { ...defaultFinanceState.settings },
+            transactions: [],
+            deleted_ids: [],
+            updated_at: Math.floor(Date.now() / 1000),
+          };
+    const seeded = await kvCommand<string>([
+      "SET",
+      KV_FINANCE_KEY,
+      JSON.stringify(initialState),
+      "NX",
+    ]);
+    if (seeded === "OK") {
+      globalThis.__ROBLOX_FINANCE_STATE__ = initialState;
+      return initialState;
+    }
+    return loadFinanceState();
+  }
+
   const fileState = readStorageFile<FinanceState | null>("finance.json", null);
   if (fileState && Array.isArray(fileState.transactions)) {
     globalThis.__ROBLOX_FINANCE_STATE__ = {
       settings: fileState.settings || { ...defaultFinanceState.settings },
-      transactions: fileState.transactions || [],
+      transactions: [...fileState.transactions],
       deleted_ids: Array.isArray(fileState.deleted_ids)
-        ? fileState.deleted_ids
+        ? [...fileState.deleted_ids]
         : [],
       updated_at: fileState.updated_at || Math.floor(Date.now() / 1000),
     };
     return globalThis.__ROBLOX_FINANCE_STATE__;
   }
 
-  // 2. Try Vercel KV / Upstash Redis
-  if (hasVercelKV()) {
-    const raw = await kvCommand<string>(["GET", KV_FINANCE_KEY]);
-    if (raw) {
-      try {
-        const parsed =
-          typeof raw === "string"
-            ? (JSON.parse(raw) as FinanceState)
-            : (raw as FinanceState);
-        if (parsed && Array.isArray(parsed.transactions)) {
-          globalThis.__ROBLOX_FINANCE_STATE__ = {
-            settings: parsed.settings || { ...defaultFinanceState.settings },
-            transactions: parsed.transactions || [],
-            deleted_ids: Array.isArray(parsed.deleted_ids)
-              ? parsed.deleted_ids
-              : [],
-            updated_at: parsed.updated_at || Math.floor(Date.now() / 1000),
-          };
-          return globalThis.__ROBLOX_FINANCE_STATE__;
-        }
-      } catch {
-        // Fallback to memory
-      }
-    }
-  }
   return globalThis.__ROBLOX_FINANCE_STATE__!;
 }
 
@@ -154,15 +193,19 @@ async function saveFinanceState(state: FinanceState): Promise<void> {
   if (state.deleted_ids.length > 1000) {
     state.deleted_ids = state.deleted_ids.slice(-1000);
   }
-  globalThis.__ROBLOX_FINANCE_STATE__ = state;
-
-  // 1. Save to persistent file storage (NAS / local disk)
-  writeStorageFile("finance.json", state);
-
-  // 2. Save to Vercel KV if available
   if (hasVercelKV()) {
-    await kvCommand(["SET", KV_FINANCE_KEY, JSON.stringify(state)]);
+    const saved = await kvCommand<string>([
+      "SET",
+      KV_FINANCE_KEY,
+      JSON.stringify(state),
+    ]);
+    if (saved !== "OK") {
+      throw new Error("Shared finance storage did not confirm the save");
+    }
+  } else {
+    writeStorageFile("finance.json", state);
   }
+  globalThis.__ROBLOX_FINANCE_STATE__ = state;
 }
 
 const CORS_HEADERS = {
@@ -242,7 +285,12 @@ export async function POST(req: NextRequest) {
       }
       await saveFinanceState(state);
       return NextResponse.json(
-        { ok: true, state, added: newTx },
+        {
+          ok: true,
+          storage_mode: hasVercelKV() ? "vercel-kv" : "in-memory",
+          state,
+          added: newTx,
+        },
         { status: 200, headers: CORS_HEADERS }
       );
     }
@@ -259,7 +307,11 @@ export async function POST(req: NextRequest) {
         await saveFinanceState(state);
       }
       return NextResponse.json(
-        { ok: true, state },
+        {
+          ok: true,
+          storage_mode: hasVercelKV() ? "vercel-kv" : "in-memory",
+          state,
+        },
         { status: 200, headers: CORS_HEADERS }
       );
     }
@@ -268,12 +320,27 @@ export async function POST(req: NextRequest) {
       const clientTxs = Array.isArray(body.transactions)
         ? (body.transactions as FinanceTransaction[])
         : [];
+      const clientDeleted = Array.isArray(body.deleted_ids)
+        ? body.deleted_ids.map(String).filter(Boolean)
+        : [];
       const clientSettings = body.settings as Partial<FinanceSettings> | undefined;
 
       const deletedSet = new Set(state.deleted_ids || []);
-      const existingIds = new Set(state.transactions.map((t) => t.id));
-
       let changed = false;
+      for (const id of clientDeleted) {
+        if (!deletedSet.has(id)) {
+          deletedSet.add(id);
+          changed = true;
+        }
+      }
+      if (changed) {
+        state.deleted_ids = Array.from(deletedSet);
+        state.transactions = state.transactions.filter(
+          (transaction) => !deletedSet.has(transaction.id)
+        );
+      }
+
+      const existingIds = new Set(state.transactions.map((t) => t.id));
       for (const cTx of clientTxs) {
         if (
           cTx &&
@@ -310,7 +377,11 @@ export async function POST(req: NextRequest) {
         await saveFinanceState(state);
       }
       return NextResponse.json(
-        { ok: true, state },
+        {
+          ok: true,
+          storage_mode: hasVercelKV() ? "vercel-kv" : "in-memory",
+          state,
+        },
         { status: 200, headers: CORS_HEADERS }
       );
     }
@@ -325,7 +396,7 @@ export async function POST(req: NextRequest) {
         ok: false,
         error: err instanceof Error ? err.message : "Invalid POST request",
       },
-      { status: 400, headers: CORS_HEADERS }
+      { status: 500, headers: CORS_HEADERS }
     );
   }
 }
@@ -343,7 +414,11 @@ export async function DELETE(req: NextRequest) {
       state.transactions = [];
       await saveFinanceState(state);
       return NextResponse.json(
-        { ok: true, state },
+        {
+          ok: true,
+          storage_mode: hasVercelKV() ? "vercel-kv" : "in-memory",
+          state,
+        },
         { status: 200, headers: CORS_HEADERS }
       );
     }
@@ -355,7 +430,11 @@ export async function DELETE(req: NextRequest) {
       }
       await saveFinanceState(state);
       return NextResponse.json(
-        { ok: true, state },
+        {
+          ok: true,
+          storage_mode: hasVercelKV() ? "vercel-kv" : "in-memory",
+          state,
+        },
         { status: 200, headers: CORS_HEADERS }
       );
     }
