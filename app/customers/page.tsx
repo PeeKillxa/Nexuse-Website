@@ -43,7 +43,22 @@ export interface TelemetryBrief {
   device_name?: string;
 }
 
+interface CustomerApiResponse {
+  ok: boolean;
+  error?: string;
+  storage_mode?: string;
+  orders?: CustomerOrder[];
+  deleted_ids?: string[];
+  updated_at?: number;
+  state?: {
+    orders: CustomerOrder[];
+    deleted_ids?: string[];
+    updated_at: number;
+  };
+}
+
 const LOCAL_STORAGE_KEY = "nexus_customer_orders_v1";
+const LOCAL_DELETED_KEY = "nexus_customer_deleted_v1";
 
 const DEFAULT_EMU_OPTIONS = [
   "PC",
@@ -89,6 +104,10 @@ function formatThaiDate(epochSec: number): string {
 export default function CustomersPage() {
   const [orders, setOrders] = useState<CustomerOrder[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [storageMode, setStorageMode] = useState<string>("unknown");
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [lastSyncedAt, setLastSyncedAt] = useState<number>(0);
+  const [syncingOrders, setSyncingOrders] = useState<boolean>(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -126,59 +145,122 @@ export default function CustomersPage() {
     }, 3500);
   }, []);
 
-  const persistLocal = useCallback((items: CustomerOrder[]) => {
+  const persistLocal = useCallback(
+    (items: CustomerOrder[], deletedIds?: string[]) => {
     try {
       localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(items));
+      if (deletedIds) {
+        localStorage.setItem(LOCAL_DELETED_KEY, JSON.stringify(deletedIds));
+      }
     } catch {
       // ignore
     }
-  }, []);
+    },
+    []
+  );
 
-  // Fetch orders from API
+  // Load the shared customer state and merge this browser's old backup into it.
   const loadOrders = useCallback(async () => {
-    let localOrders: CustomerOrder[] | null = null;
+    let localOrders: CustomerOrder[] = [];
+    let localDeleted: string[] = [];
     try {
       const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
           localOrders = parsed;
-          setOrders(parsed);
         }
       }
+      const deletedRaw = localStorage.getItem(LOCAL_DELETED_KEY);
+      if (deletedRaw) {
+        const parsedDeleted = JSON.parse(deletedRaw);
+        if (Array.isArray(parsedDeleted)) {
+          localDeleted = parsedDeleted.map(String).filter(Boolean);
+        }
+      }
+      const localDeletedSet = new Set(localDeleted);
+      setOrders(localOrders.filter((order) => !localDeletedSet.has(order.id)));
     } catch {
       // ignore
     }
 
     try {
       const res = await fetch("/api/customers", { cache: "no-store" });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.ok && Array.isArray(data.orders)) {
-          const srvOrders: CustomerOrder[] = data.orders;
-          if (
-            localOrders &&
-            localOrders.length > 0 &&
-            (data.updated_at || 0) === 0 &&
-            srvOrders.length === 0
-          ) {
-            // Restore serverless state from local
-            await fetch("/api/customers", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                action: "sync_client_state",
-                state: { orders: localOrders, updated_at: Math.floor(Date.now() / 1000) },
-              }),
-            });
-          } else {
-            setOrders(srvOrders);
-            persistLocal(srvOrders);
-          }
+      const data = (await res.json()) as CustomerApiResponse;
+      if (!res.ok || !data.ok || !Array.isArray(data.orders)) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+
+      const serverOrders = data.orders;
+      const serverDeleted = Array.isArray(data.deleted_ids)
+        ? data.deleted_ids
+        : [];
+      const deleted = new Set([...serverDeleted, ...localDeleted]);
+      const mergedById = new Map<string, CustomerOrder>();
+
+      for (const order of serverOrders) {
+        if (order?.id && !deleted.has(order.id)) {
+          mergedById.set(order.id, order);
         }
       }
-    } catch {
-      // ignore
+      for (const order of localOrders) {
+        if (!order?.id || deleted.has(order.id)) continue;
+        const current = mergedById.get(order.id);
+        if (!current || (order.updated_at || 0) > (current.updated_at || 0)) {
+          mergedById.set(order.id, order);
+        }
+      }
+
+      const mergedOrders = Array.from(mergedById.values()).sort(
+        (a, b) => (b.created_at || 0) - (a.created_at || 0)
+      );
+      const serverById = new Map(serverOrders.map((order) => [order.id, order]));
+      const hasLocalOrderChanges = mergedOrders.some(
+        (order) => JSON.stringify(serverById.get(order.id)) !== JSON.stringify(order)
+      );
+      const hasNewDeletions = Array.from(deleted).some(
+        (id) => !serverDeleted.includes(id)
+      );
+      const hasDeletedServerOrders = serverOrders.some((order) => deleted.has(order.id));
+
+      let finalOrders = mergedOrders;
+      let finalDeleted = Array.from(deleted);
+      let finalStorageMode = data.storage_mode || "in-memory";
+
+      if (hasLocalOrderChanges || hasNewDeletions || hasDeletedServerOrders) {
+        const syncRes = await fetch("/api/customers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "sync_client_state",
+            state: {
+              orders: mergedOrders,
+              deleted_ids: finalDeleted,
+              updated_at: Math.floor(Date.now() / 1000),
+            },
+          }),
+        });
+        const syncData = (await syncRes.json()) as CustomerApiResponse;
+        if (!syncRes.ok || !syncData.ok) {
+          throw new Error(syncData.error || `HTTP ${syncRes.status}`);
+        }
+        finalOrders = syncData.orders || syncData.state?.orders || mergedOrders;
+        finalDeleted = syncData.deleted_ids || syncData.state?.deleted_ids || finalDeleted;
+        finalStorageMode = syncData.storage_mode || finalStorageMode;
+      }
+
+      setOrders(finalOrders);
+      setStorageMode(finalStorageMode);
+      setSyncError(null);
+      setLastSyncedAt(Date.now());
+      persistLocal(finalOrders, finalDeleted);
+    } catch (error) {
+      setStorageMode("error");
+      setSyncError(
+        error instanceof Error
+          ? `ซิงก์ข้อมูลลูกค้าไม่สำเร็จ: ${error.message}`
+          : "ซิงก์ข้อมูลลูกค้าไม่สำเร็จ ข้อมูลสำรองในเครื่องยังอยู่"
+      );
     } finally {
       setLoading(false);
     }
@@ -208,11 +290,26 @@ export default function CustomersPage() {
   useEffect(() => {
     loadOrders();
     loadTelemetry();
-    const timer = setInterval(() => {
+    const telemetryTimer = setInterval(() => {
       loadTelemetry();
     }, 12000);
-    return () => clearInterval(timer);
+    const ordersTimer = setInterval(() => {
+      loadOrders();
+    }, 30000);
+    return () => {
+      clearInterval(telemetryTimer);
+      clearInterval(ordersTimer);
+    };
   }, [loadOrders, loadTelemetry]);
+
+  const handleSyncOrdersNow = async () => {
+    setSyncingOrders(true);
+    try {
+      await loadOrders();
+    } finally {
+      setSyncingOrders(false);
+    }
+  };
 
   // Open Add Modal
   const handleOpenAddModal = (initialUsername = "", initialDevice = "Android Device-5") => {
@@ -388,7 +485,7 @@ export default function CustomersPage() {
       const data = await res.json();
       if (data.ok && Array.isArray(data.orders)) {
         setOrders(data.orders);
-        persistLocal(data.orders);
+        persistLocal(data.orders, data.deleted_ids);
         showToast(`🗑️ ลบข้อมูลของ ${order.facebook_name} เรียบร้อย`);
       }
     } catch {
@@ -590,6 +687,14 @@ export default function CustomersPage() {
 
           <div className="flex flex-wrap items-center gap-2.5">
             <button
+              onClick={handleSyncOrdersNow}
+              disabled={syncingOrders}
+              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:opacity-50"
+            >
+              <span aria-hidden="true">↻</span>
+              <span>{syncingOrders ? "กำลังซิงก์..." : "ซิงก์ข้อมูล"}</span>
+            </button>
+            <button
               onClick={() => handleOpenAddModal()}
               className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/50 bg-gradient-to-r from-cyan-500/25 to-blue-600/25 px-4 py-2.5 text-xs sm:text-sm font-bold text-cyan-100 hover:bg-cyan-500/35 transition shadow-lg shadow-cyan-500/15"
             >
@@ -605,6 +710,39 @@ export default function CustomersPage() {
             </Link>
           </div>
         </header>
+
+        {storageMode === "vercel-kv" && !syncError && (
+          <section
+            role="status"
+            className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-300/15 bg-emerald-300/[0.04] px-4 py-2.5 text-xs text-emerald-100/90"
+          >
+            <span>บัญชีลูกค้ากำลังแชร์ผ่านฐานข้อมูลกลาง และซิงก์อัตโนมัติทุก 30 วินาที</span>
+            <span className="text-emerald-100/60">
+              ซิงก์ล่าสุด {lastSyncedAt ? formatThaiDate(Math.floor(lastSyncedAt / 1000)) : "-"}
+            </span>
+          </section>
+        )}
+
+        {storageMode === "in-memory" && (
+          <section
+            role="alert"
+            className="rounded-xl border border-amber-300/25 bg-amber-300/[0.06] px-4 py-3 text-sm text-amber-100"
+          >
+            <p className="font-semibold">ยังไม่ได้เชื่อมฐานข้อมูลกลาง</p>
+            <p className="mt-1 text-xs leading-relaxed text-amber-100/80">
+              รายการลูกค้าอาจไม่ตรงกันระหว่างเครื่อง กรุณาตรวจการเชื่อมต่อ Upstash ใน Vercel
+            </p>
+          </section>
+        )}
+
+        {syncError && (
+          <section
+            role="alert"
+            className="rounded-xl border border-rose-400/25 bg-rose-400/[0.06] px-4 py-3 text-sm text-rose-100"
+          >
+            {syncError} ข้อมูลสำรองในเบราว์เซอร์นี้ยังไม่ถูกลบ
+          </section>
+        )}
 
         {/* ===================================================================
             SUMMARY CARDS (4 Glass Cards)

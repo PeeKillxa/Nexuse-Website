@@ -38,6 +38,7 @@ export interface CustomerOrder {
 
 export interface CustomerStoreState {
   orders: CustomerOrder[];
+  deleted_ids: string[];
   updated_at: number;
 }
 
@@ -51,6 +52,7 @@ declare global {
 function createDefaultState(): CustomerStoreState {
   return {
     orders: [],
+    deleted_ids: [],
     updated_at: 0,
   };
 }
@@ -61,79 +63,128 @@ if (!globalThis.__ROBLOX_FARM_CUSTOMERS__) {
 
 function hasVercelKV(): boolean {
   return Boolean(
-    (process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL) &&
-      (process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN)
+    (process.env.KV_REST_API_URL ||
+      process.env.UPSTASH_REDIS_REST_URL ||
+      process.env.UPSTASH_REDIS_REST_KV_REST_API_URL) &&
+      (process.env.KV_REST_API_TOKEN ||
+        process.env.UPSTASH_REDIS_REST_TOKEN ||
+        process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN)
   );
 }
 
 async function kvCommand<T = unknown>(command: unknown[]): Promise<T | null> {
   const url =
-    process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || "";
+    process.env.KV_REST_API_URL ||
+    process.env.UPSTASH_REDIS_REST_URL ||
+    process.env.UPSTASH_REDIS_REST_KV_REST_API_URL ||
+    "";
   const token =
-    process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || "";
-  if (!url || !token) return null;
+    process.env.KV_REST_API_TOKEN ||
+    process.env.UPSTASH_REDIS_REST_TOKEN ||
+    process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN ||
+    "";
+  if (!url || !token) throw new Error("Shared customer storage is not configured");
 
-  try {
-    const res = await fetch(url.replace(/\/$/, ""), {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(command),
-      cache: "no-store",
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { result?: T };
-    return data.result ?? null;
-  } catch {
-    return null;
+  const res = await fetch(url.replace(/\/$/, ""), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(command),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`Shared customer storage returned HTTP ${res.status}`);
   }
+
+  const data = (await res.json()) as { result?: T; error?: string };
+  if (data.error) throw new Error(`Shared customer storage: ${data.error}`);
+  return data.result ?? null;
 }
 
 async function loadCustomersState(): Promise<CustomerStoreState> {
-  // 1. Try file storage first (NAS)
+  if (hasVercelKV()) {
+    const raw = await kvCommand<string>(["GET", KV_CUSTOMERS_KEY]);
+    if (raw !== null) {
+      const parsed =
+        typeof raw === "string" ? (JSON.parse(raw) as CustomerStoreState) : raw;
+      if (!parsed || !Array.isArray(parsed.orders)) {
+        throw new Error("Shared customer storage contains invalid data");
+      }
+      const state: CustomerStoreState = {
+        orders: [...parsed.orders],
+        deleted_ids: Array.isArray(parsed.deleted_ids)
+          ? [...parsed.deleted_ids]
+          : [],
+        updated_at: parsed.updated_at || 0,
+      };
+      globalThis.__ROBLOX_FARM_CUSTOMERS__ = state;
+      return state;
+    }
+
+    // Seed the shared store once from a persistent NAS copy, if available.
+    const fileState = readStorageFile<CustomerStoreState | null>(
+      "customers.json",
+      null
+    );
+    const initialState: CustomerStoreState =
+      fileState && Array.isArray(fileState.orders)
+        ? {
+            orders: [...fileState.orders],
+            deleted_ids: Array.isArray(fileState.deleted_ids)
+              ? [...fileState.deleted_ids]
+              : [],
+            updated_at: fileState.updated_at || 0,
+          }
+        : createDefaultState();
+    const seeded = await kvCommand<string>([
+      "SET",
+      KV_CUSTOMERS_KEY,
+      JSON.stringify(initialState),
+      "NX",
+    ]);
+    if (seeded === "OK") {
+      globalThis.__ROBLOX_FARM_CUSTOMERS__ = initialState;
+      return initialState;
+    }
+    // Another Vercel instance may have initialized the key concurrently.
+    return loadCustomersState();
+  }
+
   const fileState = readStorageFile<CustomerStoreState | null>(
     "customers.json",
     null
   );
   if (fileState && Array.isArray(fileState.orders)) {
-    globalThis.__ROBLOX_FARM_CUSTOMERS__ = fileState;
-    return fileState;
-  }
-
-  // 2. Try KV
-  if (hasVercelKV()) {
-    const raw = await kvCommand<string>(["GET", KV_CUSTOMERS_KEY]);
-    if (raw) {
-      try {
-        const parsed =
-          typeof raw === "string"
-            ? (JSON.parse(raw) as CustomerStoreState)
-            : (raw as CustomerStoreState);
-        if (parsed && Array.isArray(parsed.orders)) {
-          globalThis.__ROBLOX_FARM_CUSTOMERS__ = parsed;
-          return parsed;
-        }
-      } catch {
-        // Fallback to memory
-      }
-    }
+    const state: CustomerStoreState = {
+      orders: [...fileState.orders],
+      deleted_ids: Array.isArray(fileState.deleted_ids)
+        ? [...fileState.deleted_ids]
+        : [],
+      updated_at: fileState.updated_at || 0,
+    };
+    globalThis.__ROBLOX_FARM_CUSTOMERS__ = state;
+    return state;
   }
   return globalThis.__ROBLOX_FARM_CUSTOMERS__!;
 }
 
 async function saveCustomersState(state: CustomerStoreState): Promise<void> {
   state.updated_at = Math.floor(Date.now() / 1000);
-  globalThis.__ROBLOX_FARM_CUSTOMERS__ = state;
-
-  // 1. Save to persistent file storage
-  writeStorageFile("customers.json", state);
-
-  // 2. Save to KV
   if (hasVercelKV()) {
-    await kvCommand(["SET", KV_CUSTOMERS_KEY, JSON.stringify(state)]);
+    const saved = await kvCommand<string>([
+      "SET",
+      KV_CUSTOMERS_KEY,
+      JSON.stringify(state),
+    ]);
+    if (saved !== "OK") {
+      throw new Error("Shared customer storage did not confirm the save");
+    }
+  } else {
+    writeStorageFile("customers.json", state);
   }
+  globalThis.__ROBLOX_FARM_CUSTOMERS__ = state;
 }
 
 // ============================================================================
@@ -254,6 +305,7 @@ export async function GET() {
         storage_mode: hasVercelKV() ? "vercel-kv" : "in-memory",
         summary,
         orders,
+        deleted_ids: state.deleted_ids || [],
         updated_at: state.updated_at,
       },
       { status: 200, headers: CORS_HEADERS }
@@ -355,7 +407,13 @@ export async function POST(req: NextRequest) {
       await saveCustomersState(state);
 
       return NextResponse.json(
-        { ok: true, order: newOrder, orders: state.orders },
+        {
+          ok: true,
+          storage_mode: hasVercelKV() ? "vercel-kv" : "in-memory",
+          order: newOrder,
+          orders: state.orders,
+          deleted_ids: state.deleted_ids,
+        },
         { status: 200, headers: CORS_HEADERS }
       );
     }
@@ -461,7 +519,13 @@ export async function POST(req: NextRequest) {
       await saveCustomersState(state);
 
       return NextResponse.json(
-        { ok: true, order: target, orders: state.orders },
+        {
+          ok: true,
+          storage_mode: hasVercelKV() ? "vercel-kv" : "in-memory",
+          order: target,
+          orders: state.orders,
+          deleted_ids: state.deleted_ids,
+        },
         { status: 200, headers: CORS_HEADERS }
       );
     }
@@ -479,9 +543,20 @@ export async function POST(req: NextRequest) {
       }
 
       state.orders = state.orders.filter((o) => o.id !== id);
+      if (id) {
+        state.deleted_ids = Array.from(new Set([...state.deleted_ids, id])).slice(
+          -1000
+        );
+      }
       await saveCustomersState(state);
       return NextResponse.json(
-        { ok: true, deleted_id: id, orders: state.orders },
+        {
+          ok: true,
+          storage_mode: hasVercelKV() ? "vercel-kv" : "in-memory",
+          deleted_id: id,
+          orders: state.orders,
+          deleted_ids: state.deleted_ids,
+        },
         { status: 200, headers: CORS_HEADERS }
       );
     }
@@ -516,7 +591,14 @@ export async function POST(req: NextRequest) {
       await saveCustomersState(state);
 
       return NextResponse.json(
-        { ok: true, order: target, orders: state.orders, finance_tx_id: txId },
+        {
+          ok: true,
+          storage_mode: hasVercelKV() ? "vercel-kv" : "in-memory",
+          order: target,
+          orders: state.orders,
+          deleted_ids: state.deleted_ids,
+          finance_tx_id: txId,
+        },
         { status: 200, headers: CORS_HEADERS }
       );
     }
@@ -532,28 +614,50 @@ export async function POST(req: NextRequest) {
         await saveCustomersState(state);
       }
       return NextResponse.json(
-        { ok: true, order: target, orders: state.orders },
+        {
+          ok: true,
+          storage_mode: hasVercelKV() ? "vercel-kv" : "in-memory",
+          order: target,
+          orders: state.orders,
+          deleted_ids: state.deleted_ids,
+        },
         { status: 200, headers: CORS_HEADERS }
       );
     }
 
-    // 6. Sync client state (handles serverless cold-start)
+    // 6. Merge client backups with the shared state (handles old local data).
     if (action === "sync_client_state") {
       const incoming = body.state as CustomerStoreState | undefined;
-      if (
-        incoming &&
-        Array.isArray(incoming.orders) &&
-        (incoming.updated_at || 0) > (state.updated_at || 0)
-      ) {
-        state.orders = incoming.orders;
-        state.updated_at = incoming.updated_at;
-        globalThis.__ROBLOX_FARM_CUSTOMERS__ = state;
-        if (hasVercelKV()) {
-          await kvCommand(["SET", KV_CUSTOMERS_KEY, JSON.stringify(state)]);
+      if (incoming && Array.isArray(incoming.orders)) {
+        const deleted = new Set([
+          ...(state.deleted_ids || []),
+          ...(Array.isArray(incoming.deleted_ids) ? incoming.deleted_ids : []),
+        ]);
+        const merged = new Map<string, CustomerOrder>();
+
+        for (const order of state.orders) {
+          if (order?.id && !deleted.has(order.id)) merged.set(order.id, order);
         }
+        for (const order of incoming.orders) {
+          if (!order?.id || deleted.has(order.id)) continue;
+          const current = merged.get(order.id);
+          if (!current || (order.updated_at || 0) > (current.updated_at || 0)) {
+            merged.set(order.id, order);
+          }
+        }
+
+        state.orders = Array.from(merged.values());
+        state.deleted_ids = Array.from(deleted).slice(-1000);
+        await saveCustomersState(state);
       }
       return NextResponse.json(
-        { ok: true, state },
+        {
+          ok: true,
+          storage_mode: hasVercelKV() ? "vercel-kv" : "in-memory",
+          state,
+          orders: state.orders,
+          deleted_ids: state.deleted_ids,
+        },
         { status: 200, headers: CORS_HEADERS }
       );
     }
@@ -568,7 +672,7 @@ export async function POST(req: NextRequest) {
         ok: false,
         error: err instanceof Error ? err.message : "Invalid POST body",
       },
-      { status: 400, headers: CORS_HEADERS }
+      { status: 500, headers: CORS_HEADERS }
     );
   }
 }
