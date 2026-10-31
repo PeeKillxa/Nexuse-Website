@@ -52,8 +52,8 @@ declare global {
 
 const defaultFinanceState: FinanceState = {
   settings: {
-    partner_a_name: "เรา (ตัวเอง)",
-    partner_b_name: "เพื่อน (หุ้นส่วน)",
+    partner_a_name: "พี",
+    partner_b_name: "บ๊วย",
   },
   transactions: [],
   deleted_ids: [],
@@ -252,9 +252,9 @@ export async function POST(req: NextRequest) {
       if (settingsRaw) {
         state.settings = {
           partner_a_name:
-            String(settingsRaw.partner_a_name || "").trim() || "เรา (ตัวเอง)",
+            String(settingsRaw.partner_a_name || "").trim() || "พี",
           partner_b_name:
-            String(settingsRaw.partner_b_name || "").trim() || "เพื่อน (หุ้นส่วน)",
+            String(settingsRaw.partner_b_name || "").trim() || "บ๊วย",
         };
         await saveFinanceState(state);
       }
@@ -291,17 +291,17 @@ export async function POST(req: NextRequest) {
 
       if (
         clientSettings &&
-        state.settings.partner_a_name === "เรา (ตัวเอง)" &&
-        state.settings.partner_b_name === "เพื่อน (หุ้นส่วน)" &&
+        (state.settings.partner_a_name === "เรา (ตัวเอง)" || !state.settings.partner_a_name) &&
+        (state.settings.partner_b_name === "เพื่อน (หุ้นส่วน)" || !state.settings.partner_b_name) &&
         (clientSettings.partner_a_name || clientSettings.partner_b_name)
       ) {
         state.settings = {
           partner_a_name:
             String(clientSettings.partner_a_name || "").trim() ||
-            state.settings.partner_a_name,
+            "พี",
           partner_b_name:
             String(clientSettings.partner_b_name || "").trim() ||
-            state.settings.partner_b_name,
+            "บ๊วย",
         };
         changed = true;
       }

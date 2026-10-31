@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readStorageFile, writeStorageFile } from "@/app/lib/server-storage";
+import {
+  upsertFinanceFromOrder,
+  removeFinanceFromOrder,
+  PartnerId,
+} from "@/app/lib/finance-store";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -25,6 +30,8 @@ export interface CustomerOrder {
   assigned_device?: string; // จอ / Emu ที่รับผิดชอบ (เช่น "Android Device-5", "Android Device-4", "PC")
   handled_by?: string; // ผู้รับงาน (เช่น "เรา", "เพื่อน")
   note?: string; // หมายเหตุเพิ่มเติม
+  finance_tx_id?: string; // ลิ้งค์ ID รายการในระบบบัญชีกองกลาง 50/50
+  finance_partner?: PartnerId; // ผู้รับเงินโอนเข้าบัญชี (A: พี, B: บ๊วย)
   created_at: number; // Unix epoch seconds
   updated_at: number; // Unix epoch seconds
 }
@@ -302,6 +309,9 @@ export async function POST(req: NextRequest) {
       const { cleanUsername, displayName, avatarUrl } =
         await resolveRobloxInfo(rawUsername);
 
+      const price = body.price !== undefined ? Math.max(0, Number(body.price)) : 0;
+      const partner: PartnerId = body.finance_partner === "A" ? "A" : "B"; // ค่าเริ่มต้น: B (บ๊วย - คนรับโอนหลัก)
+
       const newOrder: CustomerOrder = {
         id: `cust_${nowSec}_${Math.random().toString(36).slice(2, 7)}`,
         facebook_name,
@@ -310,7 +320,7 @@ export async function POST(req: NextRequest) {
         display_name: displayName,
         avatar_url: avatarUrl,
         target_item,
-        price: body.price !== undefined ? Math.max(0, Number(body.price)) : 0,
+        price,
         paid_status: (["PAID", "UNPAID", "DEPOSIT"].includes(
           String(body.paid_status)
         )
@@ -322,11 +332,24 @@ export async function POST(req: NextRequest) {
           ? String(body.order_status)
           : "FARMING") as OrderStatus,
         assigned_device: String(body.assigned_device || "").trim() || "PC",
-        handled_by: String(body.handled_by || "").trim() || undefined,
+        handled_by: String(body.handled_by || "").trim() || (partner === "B" ? "บ๊วย" : "พี"),
         note: String(body.note || "").trim() || undefined,
+        finance_partner: partner,
         created_at: nowSec,
         updated_at: nowSec,
       };
+
+      // 🔗 ซิงค์เข้าหน้าระบบคำนวณเงินหาร 2 ทันที (ถ้ามีราคา และไม่ได้ปิด sync_to_finance)
+      if (body.sync_to_finance !== false && price > 0) {
+        try {
+          const txId = await upsertFinanceFromOrder(newOrder, partner);
+          if (txId) {
+            newOrder.finance_tx_id = txId;
+          }
+        } catch {
+          // ignore sync failure
+        }
+      }
 
       state.orders.unshift(newOrder);
       await saveCustomersState(state);
@@ -383,6 +406,9 @@ export async function POST(req: NextRequest) {
       if (body.note !== undefined) {
         target.note = String(body.note).trim() || undefined;
       }
+      if (body.finance_partner !== undefined) {
+        target.finance_partner = body.finance_partner === "A" ? "A" : "B";
+      }
 
       // If username changed, re-resolve avatar
       if (
@@ -397,6 +423,40 @@ export async function POST(req: NextRequest) {
         target.avatar_url = avatarUrl;
       }
 
+      // 🔗 ปรับปรุงข้อมูลในระบบการเงิน 50/50
+      const partner: PartnerId = target.finance_partner || "B";
+      if (body.sync_to_finance === false) {
+        // หากผู้ใช้เลือกตัดการเชื่อมต่อกับระบบการเงิน
+        if (target.finance_tx_id) {
+          try {
+            await removeFinanceFromOrder(target.id, target.finance_tx_id);
+          } catch {
+            // ignore
+          }
+          target.finance_tx_id = undefined;
+        }
+      } else if (
+        body.sync_to_finance === true ||
+        Boolean(target.finance_tx_id)
+      ) {
+        if (target.price && target.price > 0) {
+          try {
+            const txId = await upsertFinanceFromOrder(target, partner);
+            if (txId) target.finance_tx_id = txId;
+          } catch {
+            // ignore
+          }
+        } else if (target.finance_tx_id) {
+          // ถ้ายอดเงินถูกแก้เป็น 0 ให้เอาออกจากระบบการเงิน
+          try {
+            await removeFinanceFromOrder(target.id, target.finance_tx_id);
+          } catch {
+            // ignore
+          }
+          target.finance_tx_id = undefined;
+        }
+      }
+
       target.updated_at = nowSec;
       await saveCustomersState(state);
 
@@ -409,6 +469,15 @@ export async function POST(req: NextRequest) {
     // 3. Delete customer order
     if (action === "delete_customer") {
       const id = String(body.id || "");
+      const target = state.orders.find((o) => o.id === id);
+      if (target && target.finance_tx_id) {
+        try {
+          await removeFinanceFromOrder(target.id, target.finance_tx_id);
+        } catch {
+          // ignore
+        }
+      }
+
       state.orders = state.orders.filter((o) => o.id !== id);
       await saveCustomersState(state);
       return NextResponse.json(
@@ -417,7 +486,58 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 4. Sync client state (handles serverless cold-start)
+    // 4. Dedicated Sync to Finance Action (กดปุ่ม 1-Click Sync บนการ์ด)
+    if (action === "sync_to_finance") {
+      const id = String(body.id || body.order_id || "");
+      const target = state.orders.find((o) => o.id === id);
+      if (!target) {
+        return NextResponse.json(
+          { ok: false, error: "ไม่พบข้อมูลออเดอร์นี้" },
+          { status: 404, headers: CORS_HEADERS }
+        );
+      }
+
+      if (!target.price || target.price <= 0) {
+        return NextResponse.json(
+          { ok: false, error: "ออเดอร์นี้ไม่มีจำนวนเงิน จึงไม่สามารถนำไปหาร 2 ได้" },
+          { status: 400, headers: CORS_HEADERS }
+        );
+      }
+
+      const partner: PartnerId =
+        body.finance_partner === "A" ? "A" : target.finance_partner || "B";
+      target.finance_partner = partner;
+
+      const txId = await upsertFinanceFromOrder(target, partner);
+      if (txId) {
+        target.finance_tx_id = txId;
+      }
+      target.updated_at = nowSec;
+      await saveCustomersState(state);
+
+      return NextResponse.json(
+        { ok: true, order: target, orders: state.orders, finance_tx_id: txId },
+        { status: 200, headers: CORS_HEADERS }
+      );
+    }
+
+    // 5. Unlink from Finance Action
+    if (action === "unlink_finance") {
+      const id = String(body.id || body.order_id || "");
+      const target = state.orders.find((o) => o.id === id);
+      if (target && target.finance_tx_id) {
+        await removeFinanceFromOrder(target.id, target.finance_tx_id);
+        target.finance_tx_id = undefined;
+        target.updated_at = nowSec;
+        await saveCustomersState(state);
+      }
+      return NextResponse.json(
+        { ok: true, order: target, orders: state.orders },
+        { status: 200, headers: CORS_HEADERS }
+      );
+    }
+
+    // 6. Sync client state (handles serverless cold-start)
     if (action === "sync_client_state") {
       const incoming = body.state as CustomerStoreState | undefined;
       if (

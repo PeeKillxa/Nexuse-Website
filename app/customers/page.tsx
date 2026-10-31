@@ -24,6 +24,8 @@ export interface CustomerOrder {
   assigned_device?: string;
   handled_by?: string;
   note?: string;
+  finance_tx_id?: string;
+  finance_partner?: "A" | "B";
   created_at: number;
   updated_at: number;
 }
@@ -111,7 +113,9 @@ export default function CustomersPage() {
   const [formPaidStatus, setFormPaidStatus] = useState<PaymentStatus>("UNPAID");
   const [formOrderStatus, setFormOrderStatus] = useState<OrderStatus>("FARMING");
   const [formDevice, setFormDevice] = useState<string>("Android Device-5");
-  const [formHandledBy, setFormHandledBy] = useState<string>("เรา (ตัวเอง)");
+  const [formHandledBy, setFormHandledBy] = useState<string>("บ๊วย");
+  const [formPartner, setFormPartner] = useState<"A" | "B">("B");
+  const [formSyncFinance, setFormSyncFinance] = useState<boolean>(true);
   const [formNote, setFormNote] = useState<string>("");
   const [savingForm, setSavingForm] = useState<boolean>(false);
 
@@ -221,7 +225,9 @@ export default function CustomersPage() {
     setFormPaidStatus("UNPAID");
     setFormOrderStatus("FARMING");
     setFormDevice(initialDevice);
-    setFormHandledBy("เรา (ตัวเอง)");
+    setFormPartner("B");
+    setFormSyncFinance(true);
+    setFormHandledBy("บ๊วย");
     setFormNote("");
     setShowModal(true);
   };
@@ -237,7 +243,9 @@ export default function CustomersPage() {
     setFormPaidStatus(order.paid_status || "UNPAID");
     setFormOrderStatus(order.order_status || "FARMING");
     setFormDevice(order.assigned_device || "PC");
-    setFormHandledBy(order.handled_by || "เรา (ตัวเอง)");
+    setFormPartner(order.finance_partner || "B");
+    setFormSyncFinance(Boolean(order.finance_tx_id) || true);
+    setFormHandledBy(order.handled_by || (order.finance_partner === "A" ? "พี" : "บ๊วย"));
     setFormNote(order.note || "");
     setShowModal(true);
   };
@@ -264,7 +272,9 @@ export default function CustomersPage() {
         paid_status: formPaidStatus,
         order_status: formOrderStatus,
         assigned_device: formDevice.trim() || "PC",
-        handled_by: formHandledBy.trim(),
+        handled_by: formHandledBy.trim() || (formPartner === "B" ? "บ๊วย" : "พี"),
+        finance_partner: formPartner,
+        sync_to_finance: formSyncFinance,
         note: formNote.trim(),
       };
 
@@ -291,10 +301,71 @@ export default function CustomersPage() {
       } else {
         showToast(`❌ เกิดข้อผิดพลาด: ${data.error || "ไม่สามารถบันทึกได้"}`);
       }
-    } catch (err) {
+    } catch {
       showToast("❌ เครือข่ายขัดข้อง กรุณาลองใหม่อีกครั้ง");
     } finally {
       setSavingForm(false);
+    }
+  };
+
+  // 1-Click Sync to Finance 50/50
+  const handleSyncToFinance = async (
+    order: CustomerOrder,
+    partner: "A" | "B" = "B"
+  ) => {
+    try {
+      const res = await fetch("/api/customers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "sync_to_finance",
+          id: order.id,
+          finance_partner: partner,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.orders)) {
+        setOrders(data.orders);
+        persistLocal(data.orders);
+        showToast(
+          `💰 ส่งยอด ฿${formatMoney(order.price)} เข้าบัญชีหาร 2 (${
+            partner === "A" ? "พี" : "บ๊วย"
+          }) เรียบร้อย!`
+        );
+      } else {
+        showToast(`❌ ซิงค์ไม่สำเร็จ: ${data.error || "ข้อผิดพลาด"}`);
+      }
+    } catch {
+      showToast("❌ เครือข่ายขัดข้อง ไม่สามารถซิงค์ได้");
+    }
+  };
+
+  // Unlink from Finance
+  const handleUnlinkFinance = async (order: CustomerOrder) => {
+    if (
+      !confirm(
+        `ต้องการยกเลิกการลิ้งค์รายการของ "${order.facebook_name}" ออกจากระบบหาร 2 ใช่หรือไม่?`
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch("/api/customers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "unlink_finance",
+          id: order.id,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.orders)) {
+        setOrders(data.orders);
+        persistLocal(data.orders);
+        showToast("🔗 ปลดการเชื่อมโยงกับระบบคำนวณเงินแล้ว");
+      }
+    } catch {
+      showToast("❌ เกิดข้อผิดพลาด");
     }
   };
 
@@ -806,6 +877,29 @@ export default function CustomersPage() {
                             </span>
                           )}
 
+                          {/* 🔗 Finance 50/50 Linked Badge */}
+                          {order.finance_tx_id ? (
+                            <Link
+                              href="/finance"
+                              className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-300 hover:bg-emerald-500/25 transition shadow-sm"
+                              title="ลิ้งค์เข้าหน้าคำนวณเงินหาร 2 แล้ว คลิกเพื่อไปดู"
+                            >
+                              <span>💰 บัญชีหาร 2 ({order.finance_partner === "A" ? "เข้าพี" : "เข้าบ๊วย"})</span>
+                              <span className="text-emerald-400">↗</span>
+                            </Link>
+                          ) : (
+                            order.price !== undefined && order.price > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => handleSyncToFinance(order, "B")}
+                                className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-300 hover:bg-amber-500/25 transition shadow-sm"
+                                title="คลิกเพื่อส่งยอดนี้เข้าหน้าคำนวณเงินหาร 2 ทันที (เงินโอนเข้าบ๊วย)"
+                              >
+                                <span>⚡ ลิ้งค์เข้าบัญชีหาร 2 (บ๊วย)</span>
+                              </button>
+                            )
+                          )}
+
                           <span className="text-[10px] text-slate-500">
                             {formatThaiDate(order.created_at)}
                           </span>
@@ -1176,6 +1270,87 @@ export default function CustomersPage() {
                 </div>
               </div>
 
+              {/* 🔗 Finance 50/50 Linking Section */}
+              <div className="rounded-2xl border border-cyan-500/30 bg-cyan-950/20 p-3.5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-black text-cyan-200 flex items-center gap-1.5">
+                    <span>⚖️</span>
+                    <span>ระบบบัญชีหาร 2 (พี 50% : บ๊วย 50%)</span>
+                  </label>
+                  <label className="inline-flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={formSyncFinance}
+                      onChange={(e) => setFormSyncFinance(e.target.checked)}
+                      className="rounded accent-cyan-400 h-4 w-4"
+                    />
+                    <span className="text-xs font-bold text-slate-300">
+                      ลิ้งค์เข้าหน้าหาร 2 ทันที
+                    </span>
+                  </label>
+                </div>
+
+                {formSyncFinance && (
+                  <div className="space-y-2 pt-1 border-t border-cyan-500/20">
+                    <p className="text-[11px] text-slate-400">
+                      ลูกค้าโอนเงินเข้าบัญชีใคร? (นำยอดเข้ากองกลางเพื่อหาร 2):
+                    </p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFormPartner("B");
+                          setFormHandledBy("บ๊วย");
+                        }}
+                        className={`rounded-xl p-2.5 text-xs font-bold border transition flex flex-col items-center gap-1 text-center ${
+                          formPartner === "B"
+                            ? "border-emerald-400 bg-emerald-500/20 text-emerald-200 shadow-md shadow-emerald-500/20"
+                            : "border-white/10 bg-slate-950/60 text-slate-400 hover:bg-white/5"
+                        }`}
+                      >
+                        <span className="text-sm">🟢 บ๊วย (คนรับโอนหลัก)</span>
+                        <span className="text-[10px] text-slate-400">
+                          เงินเข้าบ๊วย → หาร 2 บ๊วยโอนให้พี
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFormPartner("A");
+                          setFormHandledBy("พี");
+                        }}
+                        className={`rounded-xl p-2.5 text-xs font-bold border transition flex flex-col items-center gap-1 text-center ${
+                          formPartner === "A"
+                            ? "border-cyan-400 bg-cyan-500/20 text-cyan-200 shadow-md shadow-cyan-500/20"
+                            : "border-white/10 bg-slate-950/60 text-slate-400 hover:bg-white/5"
+                        }`}
+                      >
+                        <span className="text-sm">🔵 พี</span>
+                        <span className="text-[10px] text-slate-400">
+                          เงินเข้าพี → หาร 2 พีโอนให้บ๊วย
+                        </span>
+                      </button>
+                    </div>
+
+                    <div className="rounded-xl bg-slate-950/80 px-3 py-2 text-[11px] text-slate-400 space-y-0.5 border border-white/5">
+                      <p className="font-semibold text-slate-300">
+                        📌 ข้อมูลที่จะส่งไปหน้าคำนวณเงิน:
+                      </p>
+                      <p>
+                        • <span className="text-amber-300 font-bold">จำนวนเงิน:</span> ฿{formPrice || "0"} บาท
+                      </p>
+                      <p>
+                        • <span className="text-cyan-300 font-bold">ลูกค้า:</span> {formFbName || "(ชื่อเฟส)"} (@{formUsername || "(ชื่อในเกม)"})
+                      </p>
+                      <p>
+                        • <span className="text-purple-300 font-bold">ทำอะไร:</span> {formTargetItem || "(ของที่หา)"}
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Handled By & Notes */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1">
@@ -1186,7 +1361,7 @@ export default function CustomersPage() {
                     type="text"
                     value={formHandledBy}
                     onChange={(e) => setFormHandledBy(e.target.value)}
-                    placeholder="เช่น เรา, เพื่อน"
+                    placeholder="เช่น บ๊วย, พี"
                     className="w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-xs sm:text-sm text-white placeholder-slate-500 focus:border-cyan-400 focus:outline-none"
                   />
                 </div>
@@ -1199,7 +1374,7 @@ export default function CustomersPage() {
                     type="text"
                     value={formNote}
                     onChange={(e) => setFormNote(e.target.value)}
-                    placeholder="เช่น โอนเงินเข้า บช. เราแล้ว"
+                    placeholder="เช่น โอนเงินเข้า บช. บ๊วยแล้ว"
                     className="w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-xs sm:text-sm text-white placeholder-slate-500 focus:border-cyan-400 focus:outline-none"
                   />
                 </div>

@@ -77,8 +77,8 @@ const LOCAL_STORAGE_DELETED_KEY = "nexus_finance_deleted_ids_v1";
 export default function FinancePage() {
   const [transactions, setTransactions] = useState<FinanceTransaction[]>([]);
   const [settings, setSettings] = useState<FinanceSettings>({
-    partner_a_name: "เรา (ตัวเอง)",
-    partner_b_name: "เพื่อน (หุ้นส่วน)",
+    partner_a_name: "พี",
+    partner_b_name: "บ๊วย",
   });
   const [loading, setLoading] = useState<boolean>(true);
   const [submitting, setSubmitting] = useState<boolean>(false);
@@ -89,8 +89,8 @@ export default function FinancePage() {
 
   // Settings Modal State
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
-  const [editNameA, setEditNameA] = useState<string>("เรา (ตัวเอง)");
-  const [editNameB, setEditNameB] = useState<string>("เพื่อน (หุ้นส่วน)");
+  const [editNameA, setEditNameA] = useState<string>("พี");
+  const [editNameB, setEditNameB] = useState<string>("บ๊วย");
 
   // Form State
   const [txType, setTxType] = useState<FinanceTxType>("income");
@@ -1463,6 +1463,16 @@ export default function FinancePage() {
                             <span className="text-[11px] text-slate-500">
                               {formatThaiDateTime(tx.created_at)}
                             </span>
+
+                            {tx.id.startsWith("tx_order_") && (
+                              <Link
+                                href="/customers"
+                                className="inline-flex items-center gap-1 rounded-md border border-cyan-400/30 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-bold text-cyan-300 hover:bg-cyan-500/20 transition"
+                                title="คลิกเพื่อไปดูข้อมูลลูกค้าในระบบออเดอร์"
+                              >
+                                <span>🛍️ ลูกค้าจากระบบออเดอร์</span>
+                              </Link>
+                            )}
                           </div>
 
                           <p className="text-sm font-bold text-white truncate">
