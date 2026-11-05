@@ -23,6 +23,7 @@ export interface TelemetryPayload {
   gems?: number;
   gold?: number;
   april_coins?: number;
+  summer_pearls?: number;
   wins?: number;
   disconnects?: number;
   save_to_log?: boolean;
@@ -56,6 +57,7 @@ export interface AccountLogEntry {
   level: number;
   gems: number;
   april_coins: number;
+  summer_pearls?: number;
   gold: number;
   wins: number;
   disconnects: number;
@@ -310,7 +312,8 @@ async function saveAccountToLog(
     device_name: rawDevice,
     level: Number(acc.level || 1),
     gems: Number(acc.gems || 0),
-    april_coins: Number(acc.april_coins || 0),
+    april_coins: Number(acc.summer_pearls ?? acc.april_coins ?? 0),
+    summer_pearls: Number(acc.summer_pearls ?? acc.april_coins ?? 0),
     gold: Number(acc.gold || 0),
     wins: Number(acc.wins || 0),
     disconnects: Number(acc.disconnects || 0),
@@ -452,11 +455,12 @@ async function upsertAccountTelemetry(
     countedOffline = false;
   }
 
-  const incomingAprilCoins = Number(
-    payload.april_coins ?? payload.extra_stats?.april_coins ?? existing?.april_coins ?? 0
+  const incomingSummerPearls = Number(
+    payload.summer_pearls ?? payload.april_coins ?? payload.extra_stats?.summer_pearls ?? payload.extra_stats?.april_coins ?? existing?.summer_pearls ?? existing?.april_coins ?? 0
   );
-  const aprilCoins =
-    incomingAprilCoins > 0 ? incomingAprilCoins : existing?.april_coins ?? 0;
+  const summerPearls =
+    incomingSummerPearls > 0 ? incomingSummerPearls : (existing?.summer_pearls ?? existing?.april_coins ?? 0);
+  const aprilCoins = summerPearls;
 
   // Default save_to_log is true unless explicitly toggled to false
   const saveToLog =
@@ -499,6 +503,7 @@ async function upsertAccountTelemetry(
     gems: incomingGems,
     gold: Number(payload.gold ?? existing?.gold ?? 0),
     april_coins: aprilCoins,
+    summer_pearls: summerPearls,
     wins,
     disconnects,
     save_to_log: saveToLog,
@@ -580,7 +585,8 @@ export async function GET() {
       let wins = acc.wins ?? 0;
       let disconnects = acc.disconnects ?? 0;
       let countedOffline = acc.counted_current_offline ?? false;
-      const aprilCoins = acc.april_coins ?? 0;
+      const summerPearls = acc.summer_pearls ?? acc.april_coins ?? 0;
+      const aprilCoins = summerPearls;
       const saveToLog = acc.save_to_log !== undefined ? acc.save_to_log : true;
 
       if (effectiveStatus === "ONLINE") {
@@ -594,6 +600,7 @@ export async function GET() {
         const updatedRecord: StoredAccount = {
           ...acc,
           april_coins: aprilCoins,
+          summer_pearls: summerPearls,
           wins,
           disconnects,
           save_to_log: saveToLog,
@@ -605,6 +612,7 @@ export async function GET() {
       accounts.push({
         ...acc,
         april_coins: aprilCoins,
+        summer_pearls: summerPearls,
         wins,
         disconnects,
         save_to_log: saveToLog,
@@ -621,7 +629,8 @@ export async function GET() {
       (totals, acc) => {
         totals.total_gems += acc.gems || 0;
         totals.total_gold += acc.gold || 0;
-        totals.total_april_coins += acc.april_coins || 0;
+        totals.total_april_coins += (acc.summer_pearls ?? acc.april_coins ?? 0);
+        totals.total_summer_pearls = (totals.total_summer_pearls || 0) + (acc.summer_pearls ?? acc.april_coins ?? 0);
         totals.total_wins += acc.wins || 0;
         totals.total_disconnects += acc.disconnects || 0;
         totals.total_uptime_seconds += acc.uptime_seconds || 0;
@@ -639,6 +648,7 @@ export async function GET() {
         total_gems: 0,
         total_gold: 0,
         total_april_coins: 0,
+        total_summer_pearls: 0,
         total_wins: 0,
         total_disconnects: 0,
         total_uptime_seconds: 0,

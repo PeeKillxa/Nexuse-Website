@@ -94,6 +94,7 @@ local sessionStartTime = os.time()
 local sessionWins = 0
 local sessionDisconnects = 0
 local cached_april_coins = 0
+local cached_summer_pearls = 0
 local isFileSystemSupported = (writefile and readfile and isfile) and true or false
 local sendTelemetry -- forward declaration
 
@@ -382,8 +383,25 @@ local function getGameStats()
         gold = 0,
         level = 0,
         rerolls = 0,
-        april_coins = 0
+        april_coins = 0,
+        summer_pearls = 0
     }
+
+    -- ตรวจสอบ _stats จาก LocalPlayer โดยตรง (Summer Pearls Event)
+    -- Path: game:GetService("Players").LocalPlayer._stats._resourceSummerPearls
+    pcall(function()
+        local s = player:FindFirstChild("_stats")
+        if s then
+            local sp = s:FindFirstChild("_resourceSummerPearls")
+            if sp then
+                local val = tonumber(sp.Value) or 0
+                if val >= 0 then
+                    stats.summer_pearls = val
+                    stats.april_coins = val
+                end
+            end
+        end
+    end)
 
     local pg = player:FindFirstChild("PlayerGui")
     if pg then
@@ -420,6 +438,26 @@ local function getGameStats()
                 end
             end
         end)
+
+        -- Fallback ตรวจสอบ UI สำหรับ SummerPearls / AprilCoins
+        if (stats.summer_pearls or 0) == 0 and stats.april_coins == 0 then
+            pcall(function()
+                for _, obj in ipairs(pg:GetDescendants()) do
+                    local n = obj.Name:lower()
+                    if n:find("summerpearl") or n:find("pearl") then
+                        local lbl = obj:FindFirstChild("Level") or obj:FindFirstChild("Amount") or obj
+                        if lbl and (lbl:IsA("TextLabel") or lbl:IsA("TextBox")) then
+                            local val = parseNumber(lbl.Text)
+                            if val > 0 then
+                                stats.summer_pearls = val
+                                stats.april_coins = val
+                                break
+                            end
+                        end
+                    end
+                end
+            end)
+        end
 
         -- Fallback สำหรับ AprilCoins กรณีอยู่ในหน้าต่างอื่นของ spawn_units หรือ PlayerGui
         if stats.april_coins == 0 then
@@ -563,13 +601,18 @@ local function getGameStats()
         stats.rerolls = cached_rerolls
     end
 
-    if stats.april_coins > 0 then
-        if stats.april_coins ~= cached_april_coins then
-            cached_april_coins = stats.april_coins
+    local effective_pearls = (stats.summer_pearls and stats.summer_pearls > 0 and stats.summer_pearls) or stats.april_coins or 0
+    if effective_pearls > 0 then
+        if effective_pearls ~= cached_summer_pearls then
+            cached_summer_pearls = effective_pearls
+            cached_april_coins = effective_pearls
             saveSessionData()
         end
+        stats.summer_pearls = effective_pearls
+        stats.april_coins = effective_pearls
     else
-        stats.april_coins = cached_april_coins
+        stats.summer_pearls = cached_summer_pearls
+        stats.april_coins = cached_summer_pearls
     end
 
     return stats

@@ -21,6 +21,7 @@ interface AccountTelemetry {
   gems: number;
   gold: number;
   april_coins: number;
+  summer_pearls?: number;
   wins: number;
   disconnects: number;
   device_name?: string;
@@ -66,6 +67,7 @@ interface TelemetryResponse {
     total_gems: number;
     total_gold: number;
     total_april_coins: number;
+    total_summer_pearls?: number;
     total_wins: number;
     total_disconnects: number;
     total_uptime_seconds: number;
@@ -85,6 +87,7 @@ interface ToastAlert {
 type SortOption =
   | "gems_desc"
   | "april_coins_desc"
+  | "summer_pearls_desc"
   | "wins_desc"
   | "level_desc"
   | "online_first"
@@ -787,7 +790,7 @@ export default function RobloxFarmDashboardPage() {
         acc.status?.toUpperCase() === "OFFLINE" && secondsSinceUpdate > 15;
       const isTimedOut = secondsSinceUpdate > OFFLINE_TIMEOUT_SECONDS;
       const isOnline = !isExplicitOffline && !isTimedOut;
-      const aprilCoins =
+      const aprilPearls =
         acc.april_coins || Number(acc.extra_stats?.april_coins || 0) || 0;
       const saveToLog =
         saveToLogPrefs[acc.user_id] !== undefined
@@ -797,7 +800,7 @@ export default function RobloxFarmDashboardPage() {
           : true;
       return {
         ...acc,
-        april_coins: aprilCoins,
+        april_coins: aprilPearls,
         wins: acc.wins || 0,
         disconnects: acc.disconnects || 0,
         save_to_log: saveToLog,
@@ -1277,7 +1280,7 @@ end)
             <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-pink-500/15 blur-2xl group-hover:bg-pink-400/25 transition" />
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-pink-300/90">
-                AprilCoins รวม
+                Summer Pearls รวม
               </span>
               <span className="flex h-10 w-10 items-center justify-center rounded-2xl border border-pink-400/30 bg-pink-500/15 text-xl shadow-inner">
                 🌸
@@ -1289,9 +1292,9 @@ end)
               </p>
             </div>
             <p className="mt-2 text-xs text-slate-400 flex items-center justify-between">
-              <span>ยอด AprilCoins รวมทุกจอ</span>
+              <span>ยอด Summer Pearls รวมทุกจอ</span>
               <span className="font-mono text-pink-300">
-                {formatCompact(liveSummary.total_april_coins)} Coins
+                {formatCompact(liveSummary.total_april_coins)} Pearls
               </span>
             </p>
           </div>
@@ -1496,7 +1499,7 @@ end)
                     value="april_coins_desc"
                     className="bg-slate-900 text-white"
                   >
-                    🌸 AprilCoins มากสุด
+                    🌸 AprilPearls มากสุด
                   </option>
                   <option value="wins_desc" className="bg-slate-900 text-white">
                     🏆 ชนะมากสุด (Wins)
@@ -2166,7 +2169,7 @@ end)
 
                 <div className="rounded-2xl border border-pink-500/30 bg-fuchsia-950/20 p-3.5">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-pink-300">
-                    🌸 April Fool รวม
+                    🦪 Summer Pearls รวม
                   </span>
                   <p className="mt-1 text-xl sm:text-2xl font-black text-pink-200 tabular-nums">
                     {formatNumber(logSummary.total_april_coins)}
@@ -2243,7 +2246,7 @@ end)
                         value="april_coins_desc"
                         className="bg-slate-900 text-white"
                       >
-                        🌸 April Fool มากสุด
+                        🦪 Summer Pearls มากสุด
                       </option>
                       <option
                         value="level_desc"
@@ -2309,7 +2312,7 @@ end)
                         <th className="py-3 px-4">ชื่อไอดี (Account)</th>
                         <th className="py-3 px-4">🖥️ จอ / Emu</th>
                         <th className="py-3 px-4">💎 เพชร (Gems)</th>
-                        <th className="py-3 px-4">🌸 April Fool</th>
+                        <th className="py-3 px-4">🦪 Summer Pearls</th>
                         <th className="py-3 px-4">⭐ Level</th>
                         <th className="py-3 px-4">🪙 Gold</th>
                         <th className="py-3 px-4">สาเหตุ / เวลาบันทึก</th>
@@ -2379,7 +2382,7 @@ end)
                               </span>
                             </td>
 
-                            {/* April Fool (AprilCoins) */}
+                            {/* April Fool (AprilPearls) */}
                             <td className="py-3.5 px-4">
                               <span className="font-black text-pink-300 tabular-nums">
                                 {formatNumber(item.april_coins || 0)}

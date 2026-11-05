@@ -37,6 +37,7 @@ export interface TelemetryBrief {
   level: number;
   gems: number;
   april_coins: number;
+  summer_pearls?: number;
   wins: number;
   disconnects: number;
   effective_status?: "ONLINE" | "OFFLINE";
@@ -582,8 +583,9 @@ export default function CustomersPage() {
     if (liveBot) {
       text += `💎 เพชรปัจจุบันในตัว: ${formatNumber(liveBot.gems)} Gems\n`;
       text += `⭐ เลเวลปัจจุบัน: Lv.${liveBot.level}\n`;
-      if (liveBot.april_coins > 0) {
-        text += `🌸 AprilCoins: ${formatNumber(liveBot.april_coins)}\n`;
+      const pearls = liveBot.summer_pearls ?? liveBot.april_coins ?? 0;
+      if (pearls > 0) {
+        text += `🦪 Summer Pearls: ${formatNumber(pearls)}\n`;
       }
       text += `🏆 ชนะด่านสะสม: ${liveBot.wins} รอบ\n`;
       text += `🟢 สถานะในเกม: ออนไลน์ฟาร์มอยู่ (จอ ${order.assigned_device || liveBot.device_name || "Emu"})\n`;
@@ -1147,9 +1149,9 @@ export default function CustomersPage() {
                         <span className="text-cyan-300">
                           💎 {formatNumber(liveBot.gems)}
                         </span>
-                        {liveBot.april_coins > 0 && (
-                          <span className="text-pink-300">
-                            🌸 {formatNumber(liveBot.april_coins)}
+                        {((liveBot.summer_pearls ?? liveBot.april_coins) || 0) > 0 && (
+                          <span className="text-amber-300">
+                            🦪 {formatNumber(liveBot.summer_pearls ?? liveBot.april_coins)}
                           </span>
                         )}
                         <span className="text-purple-300">
