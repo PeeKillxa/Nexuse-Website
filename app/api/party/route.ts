@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readStorageFile, writeStorageFile } from "@/app/lib/server-storage";
+import { hasVercelKV, kvCommand } from "@/app/lib/kv-config";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -86,34 +87,7 @@ if (!globalThis.__ROBLOX_PARTY_SYNC_STATE__) {
   globalThis.__ROBLOX_PARTY_SYNC_STATE__ = createDefaultPartyState();
 }
 
-function hasVercelKV(): boolean {
-  return Boolean(
-    process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN
-  );
-}
-
-async function kvCommand<T = unknown>(command: unknown[]): Promise<T | null> {
-  const url = process.env.KV_REST_API_URL;
-  const token = process.env.KV_REST_API_TOKEN;
-  if (!url || !token) return null;
-
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(command),
-      cache: "no-store",
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { result?: T };
-    return data.result ?? null;
-  } catch {
-    return null;
-  }
-}
+// hasVercelKV and kvCommand imported from @/app/lib/kv-config
 
 async function loadPartyState(): Promise<PartySyncState> {
   // 1. Try file storage first (NAS)

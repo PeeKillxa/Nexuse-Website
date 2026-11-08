@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readStorageFile, writeStorageFile } from "@/app/lib/server-storage";
+import { hasVercelKV, kvCommand } from "@/app/lib/kv-config";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -69,47 +70,7 @@ if (!globalThis.__ROBLOX_FINANCE_STATE__) {
   };
 }
 
-function hasVercelKV(): boolean {
-  return Boolean(
-    (process.env.KV_REST_API_URL ||
-      process.env.UPSTASH_REDIS_REST_URL ||
-      process.env.UPSTASH_REDIS_REST_KV_REST_API_URL) &&
-      (process.env.KV_REST_API_TOKEN ||
-        process.env.UPSTASH_REDIS_REST_TOKEN ||
-        process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN)
-  );
-}
-
-async function kvCommand<T = unknown>(command: unknown[]): Promise<T | null> {
-  const url =
-    process.env.KV_REST_API_URL ||
-    process.env.UPSTASH_REDIS_REST_URL ||
-    process.env.UPSTASH_REDIS_REST_KV_REST_API_URL ||
-    "";
-  const token =
-    process.env.KV_REST_API_TOKEN ||
-    process.env.UPSTASH_REDIS_REST_TOKEN ||
-    process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN ||
-    "";
-  if (!url || !token) throw new Error("Shared finance storage is not configured");
-
-  const res = await fetch(url.replace(/\/$/, ""), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(command),
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    throw new Error(`Shared finance storage returned HTTP ${res.status}`);
-  }
-
-  const data = (await res.json()) as { result?: T; error?: string };
-  if (data.error) throw new Error(`Shared finance storage: ${data.error}`);
-  return data.result ?? null;
-}
+// hasVercelKV and kvCommand imported from @/app/lib/kv-config
 
 async function loadFinanceState(): Promise<FinanceState> {
   if (hasVercelKV()) {

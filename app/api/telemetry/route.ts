@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readStorageFile, writeStorageFile } from "@/app/lib/server-storage";
+import { getKvConfig, kvCommandSafe as kvCommand } from "@/app/lib/kv-config";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -147,59 +148,8 @@ const CORS_HEADERS = {
 // OPTIONAL VERCEL KV / UPSTASH REDIS REST HELPER (Zero external packages needed)
 // ============================================================================
 
-function getKvConfig(): { url: string; token: string } | null {
-  const url =
-    process.env.KV_REST_API_URL ||
-    process.env.UPSTASH_REDIS_REST_URL ||
-    process.env.UPSTASH_REDIS_REST_KV_REST_API_URL ||
-    "";
-  const token =
-    process.env.KV_REST_API_TOKEN ||
-    process.env.UPSTASH_REDIS_REST_TOKEN ||
-    process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN ||
-    "";
-  if (url && token) {
-    return { url: url.replace(/\/$/, ""), token };
-  }
-  return null;
-}
-
+// kvConfig & kvCommand imported from @/app/lib/kv-config
 let lastKvError: string | null = null;
-
-async function kvCommand<T = unknown>(command: (string | number)[]): Promise<T | null> {
-  const kv = getKvConfig();
-  if (!kv) return null;
-  try {
-    const res = await fetch(kv.url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${kv.token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(command),
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      let bodyText = "";
-      try { bodyText = await res.text(); } catch { /* ignore */ }
-      lastKvError = `HTTP ${res.status}: ${bodyText.slice(0, 250)}`;
-      console.error(`[KV Error] ${command[0]} -> ${lastKvError}`);
-      return null;
-    }
-    const data = (await res.json()) as { result: T; error?: string };
-    if (data.error) {
-      lastKvError = `Redis Error: ${data.error}`;
-      console.error(`[KV Error] ${command[0]} -> ${lastKvError}`);
-      return null;
-    }
-    lastKvError = null;
-    return data.result;
-  } catch (e) {
-    lastKvError = e instanceof Error ? e.message : String(e);
-    console.error(`[KV Exception] ${command[0]} -> ${lastKvError}`);
-    return null;
-  }
-}
 
 async function getAllStoredAccounts(): Promise<StoredAccount[]> {
   ensureTelemetryLoadedFromFile();

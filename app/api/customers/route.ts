@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readStorageFile, writeStorageFile } from "@/app/lib/server-storage";
+import { hasVercelKV, kvCommand } from "@/app/lib/kv-config";
 import {
   upsertFinanceFromOrder,
   removeFinanceFromOrder,
@@ -61,50 +62,7 @@ if (!globalThis.__ROBLOX_FARM_CUSTOMERS__) {
   globalThis.__ROBLOX_FARM_CUSTOMERS__ = createDefaultState();
 }
 
-function hasVercelKV(): boolean {
-  return Boolean(
-    (process.env.KV_REST_API_URL ||
-      process.env.UPSTASH_REDIS_REST_URL ||
-      process.env.UPSTASH_REDIS_REST_KV_REST_API_URL) &&
-      (process.env.KV_REST_API_TOKEN ||
-        process.env.UPSTASH_REDIS_REST_TOKEN ||
-        process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN)
-  );
-}
-
-async function kvCommand<T = unknown>(command: unknown[]): Promise<T | null> {
-  const url =
-    process.env.KV_REST_API_URL ||
-    process.env.UPSTASH_REDIS_REST_URL ||
-    process.env.UPSTASH_REDIS_REST_KV_REST_API_URL ||
-    "";
-  const token =
-    process.env.KV_REST_API_TOKEN ||
-    process.env.UPSTASH_REDIS_REST_TOKEN ||
-    process.env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN ||
-    "";
-  if (!url || !token) throw new Error("Shared customer storage is not configured");
-
-  const res = await fetch(url.replace(/\/$/, ""), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(command),
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    let errBody = "";
-    try { errBody = await res.text(); } catch { /* ignore */ }
-    console.error(`[KV] HTTP ${res.status} from Upstash. cmd=${JSON.stringify(command).slice(0,80)} body=${errBody.slice(0,300)}`);
-    throw new Error(`Shared customer storage returned HTTP ${res.status}: ${errBody.slice(0, 200)}`);
-  }
-
-  const data = (await res.json()) as { result?: T; error?: string };
-  if (data.error) throw new Error(`Shared customer storage: ${data.error}`);
-  return data.result ?? null;
-}
+// hasVercelKV and kvCommand imported from @/app/lib/kv-config
 
 async function loadCustomersState(): Promise<CustomerStoreState> {
   if (hasVercelKV()) {
