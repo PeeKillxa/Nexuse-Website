@@ -164,6 +164,8 @@ function getKvConfig(): { url: string; token: string } | null {
   return null;
 }
 
+let lastKvError: string | null = null;
+
 async function kvCommand<T = unknown>(command: (string | number)[]): Promise<T | null> {
   const kv = getKvConfig();
   if (!kv) return null;
@@ -177,10 +179,24 @@ async function kvCommand<T = unknown>(command: (string | number)[]): Promise<T |
       body: JSON.stringify(command),
       cache: "no-store",
     });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { result: T };
+    if (!res.ok) {
+      let bodyText = "";
+      try { bodyText = await res.text(); } catch { /* ignore */ }
+      lastKvError = `HTTP ${res.status}: ${bodyText.slice(0, 250)}`;
+      console.error(`[KV Error] ${command[0]} -> ${lastKvError}`);
+      return null;
+    }
+    const data = (await res.json()) as { result: T; error?: string };
+    if (data.error) {
+      lastKvError = `Redis Error: ${data.error}`;
+      console.error(`[KV Error] ${command[0]} -> ${lastKvError}`);
+      return null;
+    }
+    lastKvError = null;
     return data.result;
-  } catch {
+  } catch (e) {
+    lastKvError = e instanceof Error ? e.message : String(e);
+    console.error(`[KV Exception] ${command[0]} -> ${lastKvError}`);
     return null;
   }
 }
@@ -192,15 +208,38 @@ async function getAllStoredAccounts(): Promise<StoredAccount[]> {
     const raw = await kvCommand<string[]>(["HGETALL", KV_HASH_KEY]);
     if (Array.isArray(raw) && raw.length > 0) {
       const list: StoredAccount[] = [];
+      const seenIds = new Set<string>();
       for (let i = 0; i < raw.length; i += 2) {
         try {
           const parsed = JSON.parse(raw[i + 1]) as StoredAccount;
-          list.push(parsed);
-          memoryStore.set(String(parsed.user_id), parsed);
+          const uid = String(parsed.user_id);
+          seenIds.add(uid);
+
+          // Compare with in-memory cache: NEVER let older KV data overwrite fresher in-memory heartbeat!
+          const mem = memoryStore.get(uid);
+          const memTime = mem?.server_updated_at || mem?.updated_at || 0;
+          const kvTime = parsed.server_updated_at || parsed.updated_at || 0;
+
+          if (mem && memTime > kvTime) {
+            list.push(mem);
+            // Async push fresh in-memory data to KV to re-sync
+            kvCommand(["HSET", KV_HASH_KEY, uid, JSON.stringify(mem)]).catch(() => {});
+          } else {
+            list.push(parsed);
+            memoryStore.set(uid, parsed);
+          }
         } catch {
           // ignore malformed entry
         }
       }
+
+      // Also include any accounts that are currently in memory but not yet in KV
+      for (const [uid, memAcc] of memoryStore.entries()) {
+        if (!seenIds.has(uid)) {
+          list.push(memAcc);
+        }
+      }
+
       scheduleTelemetrySave();
       return list;
     }
@@ -661,6 +700,7 @@ export async function GET() {
         server_time: nowSec,
         offline_timeout_seconds: OFFLINE_TIMEOUT_SECONDS,
         storage_mode: getKvConfig() ? "vercel-kv" : "in-memory",
+        kv_last_error: lastKvError,
         summary,
         accounts,
         logs,
