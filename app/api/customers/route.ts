@@ -95,7 +95,10 @@ async function kvCommand<T = unknown>(command: unknown[]): Promise<T | null> {
     cache: "no-store",
   });
   if (!res.ok) {
-    throw new Error(`Shared customer storage returned HTTP ${res.status}`);
+    let errBody = "";
+    try { errBody = await res.text(); } catch { /* ignore */ }
+    console.error(`[KV] HTTP ${res.status} from Upstash. cmd=${JSON.stringify(command).slice(0,80)} body=${errBody.slice(0,300)}`);
+    throw new Error(`Shared customer storage returned HTTP ${res.status}: ${errBody.slice(0, 200)}`);
   }
 
   const data = (await res.json()) as { result?: T; error?: string };
@@ -105,51 +108,67 @@ async function kvCommand<T = unknown>(command: unknown[]): Promise<T | null> {
 
 async function loadCustomersState(): Promise<CustomerStoreState> {
   if (hasVercelKV()) {
-    const raw = await kvCommand<string>(["GET", KV_CUSTOMERS_KEY]);
-    if (raw !== null) {
-      const parsed =
-        typeof raw === "string" ? (JSON.parse(raw) as CustomerStoreState) : raw;
-      if (!parsed || !Array.isArray(parsed.orders)) {
-        throw new Error("Shared customer storage contains invalid data");
+    try {
+      const raw = await kvCommand<string>(["GET", KV_CUSTOMERS_KEY]);
+      if (raw !== null) {
+        const parsed =
+          typeof raw === "string" ? (JSON.parse(raw) as CustomerStoreState) : raw;
+        if (!parsed || !Array.isArray(parsed.orders)) {
+          throw new Error("Shared customer storage contains invalid data");
+        }
+        const state: CustomerStoreState = {
+          orders: [...parsed.orders],
+          deleted_ids: Array.isArray(parsed.deleted_ids)
+            ? [...parsed.deleted_ids]
+            : [],
+          updated_at: parsed.updated_at || 0,
+        };
+        globalThis.__ROBLOX_FARM_CUSTOMERS__ = state;
+        return state;
       }
-      const state: CustomerStoreState = {
-        orders: [...parsed.orders],
-        deleted_ids: Array.isArray(parsed.deleted_ids)
-          ? [...parsed.deleted_ids]
-          : [],
-        updated_at: parsed.updated_at || 0,
-      };
-      globalThis.__ROBLOX_FARM_CUSTOMERS__ = state;
-      return state;
-    }
 
-    // Seed the shared store once from a persistent NAS copy, if available.
-    const fileState = readStorageFile<CustomerStoreState | null>(
-      "customers.json",
-      null
-    );
-    const initialState: CustomerStoreState =
-      fileState && Array.isArray(fileState.orders)
-        ? {
-            orders: [...fileState.orders],
-            deleted_ids: Array.isArray(fileState.deleted_ids)
-              ? [...fileState.deleted_ids]
-              : [],
-            updated_at: fileState.updated_at || 0,
-          }
-        : createDefaultState();
-    const seeded = await kvCommand<string>([
-      "SET",
-      KV_CUSTOMERS_KEY,
-      JSON.stringify(initialState),
-      "NX",
-    ]);
-    if (seeded === "OK") {
-      globalThis.__ROBLOX_FARM_CUSTOMERS__ = initialState;
-      return initialState;
+      // Seed the shared store once from a persistent NAS copy, if available.
+      const fileState = readStorageFile<CustomerStoreState | null>(
+        "customers.json",
+        null
+      );
+      const initialState: CustomerStoreState =
+        fileState && Array.isArray(fileState.orders)
+          ? {
+              orders: [...fileState.orders],
+              deleted_ids: Array.isArray(fileState.deleted_ids)
+                ? [...fileState.deleted_ids]
+                : [],
+              updated_at: fileState.updated_at || 0,
+            }
+          : createDefaultState();
+      const seeded = await kvCommand<string>([
+        "SET",
+        KV_CUSTOMERS_KEY,
+        JSON.stringify(initialState),
+        "NX",
+      ]);
+      if (seeded === "OK") {
+        globalThis.__ROBLOX_FARM_CUSTOMERS__ = initialState;
+        return initialState;
+      }
+      // Another Vercel instance may have initialized the key concurrently.
+      return loadCustomersState();
+    } catch (kvErr) {
+      // KV unavailable — fall back to in-memory / file so the app stays usable.
+      console.error("[KV] loadCustomersState failed, using fallback:", kvErr);
+      const fileState = readStorageFile<CustomerStoreState | null>("customers.json", null);
+      if (fileState && Array.isArray(fileState.orders)) {
+        const state: CustomerStoreState = {
+          orders: [...fileState.orders],
+          deleted_ids: Array.isArray(fileState.deleted_ids) ? [...fileState.deleted_ids] : [],
+          updated_at: fileState.updated_at || 0,
+        };
+        globalThis.__ROBLOX_FARM_CUSTOMERS__ = state;
+        return state;
+      }
+      return globalThis.__ROBLOX_FARM_CUSTOMERS__ ?? createDefaultState();
     }
-    // Another Vercel instance may have initialized the key concurrently.
-    return loadCustomersState();
   }
 
   const fileState = readStorageFile<CustomerStoreState | null>(
@@ -173,13 +192,19 @@ async function loadCustomersState(): Promise<CustomerStoreState> {
 async function saveCustomersState(state: CustomerStoreState): Promise<void> {
   state.updated_at = Math.floor(Date.now() / 1000);
   if (hasVercelKV()) {
-    const saved = await kvCommand<string>([
-      "SET",
-      KV_CUSTOMERS_KEY,
-      JSON.stringify(state),
-    ]);
-    if (saved !== "OK") {
-      throw new Error("Shared customer storage did not confirm the save");
+    try {
+      const saved = await kvCommand<string>([
+        "SET",
+        KV_CUSTOMERS_KEY,
+        JSON.stringify(state),
+      ]);
+      if (saved !== "OK") {
+        console.error("[KV] saveCustomersState: unexpected response:", saved);
+        // Don't throw — data is still saved to in-memory below
+      }
+    } catch (kvErr) {
+      console.error("[KV] saveCustomersState failed:", kvErr);
+      // Fall through — keep in-memory consistent even if KV write fails
     }
   } else {
     writeStorageFile("customers.json", state);
