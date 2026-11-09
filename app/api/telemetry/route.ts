@@ -72,6 +72,7 @@ export interface AccountLogEntry {
 // ============================================================================
 
 const OFFLINE_TIMEOUT_SECONDS = 120; // Account is marked OFFLINE if no heartbeat > 120s
+const MAX_OFFLINE_AGE_SECONDS = 86400; // Auto-delete accounts & logs older than 1 day (86400s)
 const KV_HASH_KEY = "roblox:farm:accounts:v1";
 const KV_LOGS_HASH_KEY = "roblox:farm:logs:v1";
 
@@ -565,6 +566,15 @@ export async function GET() {
       const referenceTime = acc.server_updated_at || acc.updated_at || nowSec;
       const secondsSinceUpdate = Math.max(0, nowSec - referenceTime);
 
+      // ลบไอดีที่ออฟไลน์เกิน 1 วัน (86400 วินาที) ออกจากระบบอัตโนมัติ
+      if (secondsSinceUpdate > MAX_OFFLINE_AGE_SECONDS) {
+        await deleteStoredAccount(String(acc.user_id));
+        if (logIdSet.has(acc.user_id)) {
+          await deleteAccountLogEntry(String(acc.user_id));
+        }
+        continue;
+      }
+
       // 120s timeout + 15-second grace period for room teleports / match replays
       const isTimedOut = secondsSinceUpdate > OFFLINE_TIMEOUT_SECONDS;
       const isExplicitOffline = acc.status === "OFFLINE" && secondsSinceUpdate > 15;
@@ -611,7 +621,16 @@ export async function GET() {
       });
     }
 
-    const logs = rawLogs.filter((l) => !onlineUserIds.has(l.user_id));
+    const logs: AccountLogEntry[] = [];
+    for (const l of rawLogs) {
+      if (onlineUserIds.has(l.user_id)) continue;
+      const logAgeSec = Math.max(0, nowSec - (l.logged_at || nowSec));
+      if (logAgeSec > MAX_OFFLINE_AGE_SECONDS) {
+        await deleteAccountLogEntry(String(l.user_id));
+        continue;
+      }
+      logs.push(l);
+    }
 
     // Compute Global Summary Statistics
     const summary = accounts.reduce(

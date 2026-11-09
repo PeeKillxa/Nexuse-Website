@@ -387,17 +387,42 @@ local function getGameStats()
         summer_pearls = 0
     }
 
-    -- ตรวจสอบ _stats จาก LocalPlayer โดยตรง (Summer Pearls Event)
-    -- Path: game:GetService("Players").LocalPlayer._stats._resourceSummerPearls
+    local foundDirectGems = false
+    local foundDirectGold = false
+    local foundDirectPearls = false
+
+    -- ตรวจสอบ _stats จาก LocalPlayer โดยตรง (Gems, Gold, Summer Coin)
+    -- Gems: game:GetService("Players").LocalPlayer._stats.gem_amount
+    -- Gold: game:GetService("Players").LocalPlayer._stats.gold_amount
+    -- Summer Coin: game:GetService("Players").LocalPlayer._stats._resourceSummerPearls
     pcall(function()
         local s = player:FindFirstChild("_stats")
         if s then
+            local gemObj = s:FindFirstChild("gem_amount")
+            if gemObj and gemObj.Value ~= nil then
+                local gVal = tonumber(gemObj.Value) or parseNumber(tostring(gemObj.Value))
+                if gVal and gVal >= 0 then
+                    stats.gems = gVal
+                    foundDirectGems = true
+                end
+            end
+
+            local goldObj = s:FindFirstChild("gold_amount")
+            if goldObj and goldObj.Value ~= nil then
+                local auVal = tonumber(goldObj.Value) or parseNumber(tostring(goldObj.Value))
+                if auVal and auVal >= 0 then
+                    stats.gold = auVal
+                    foundDirectGold = true
+                end
+            end
+
             local sp = s:FindFirstChild("_resourceSummerPearls")
-            if sp then
-                local val = tonumber(sp.Value) or 0
-                if val >= 0 then
+            if sp and sp.Value ~= nil then
+                local val = tonumber(sp.Value) or parseNumber(tostring(sp.Value))
+                if val and val >= 0 then
                     stats.summer_pearls = val
                     stats.april_coins = val
+                    foundDirectPearls = true
                 end
             end
         end
@@ -405,9 +430,7 @@ local function getGameStats()
 
     local pg = player:FindFirstChild("PlayerGui")
     if pg then
-        -- 1. ตรวจสอบ Level และ AprilCoins จากหน้าต่างในห้องเล่น Story / Match:
-        -- Level Path: PlayerGui.spawn_units.Lives.Main.Desc.Level
-        -- AprilCoins Path: PlayerGui.spawn_units.Lives.Frame.Resource.AprilCoins.Level
+        -- 1. ตรวจสอบ Level และ SummerCoin/AprilCoins จากหน้าต่างในห้องเล่น Story / Match:
         pcall(function()
             local su = pg:FindFirstChild("spawn_units")
             if su then
@@ -424,15 +447,17 @@ local function getGameStats()
                         end
                     end
 
-                    local aprilObj = lives:FindFirstChild("Frame")
-                        and lives.Frame:FindFirstChild("Resource")
-                        and lives.Frame.Resource:FindFirstChild("AprilCoins")
-                        and lives.Frame.Resource.AprilCoins:FindFirstChild("Level")
+                    if not foundDirectPearls then
+                        local aprilObj = lives:FindFirstChild("Frame")
+                            and lives.Frame:FindFirstChild("Resource")
+                            and lives.Frame.Resource:FindFirstChild("AprilCoins")
+                            and lives.Frame.Resource.AprilCoins:FindFirstChild("Level")
 
-                    if aprilObj and (aprilObj:IsA("TextLabel") or aprilObj:IsA("TextBox")) then
-                        local ac = parseNumber(aprilObj.Text)
-                        if ac > 0 then
-                            stats.april_coins = ac
+                        if aprilObj and (aprilObj:IsA("TextLabel") or aprilObj:IsA("TextBox")) then
+                            local ac = parseNumber(aprilObj.Text)
+                            if ac > 0 then
+                                stats.april_coins = ac
+                            end
                         end
                     end
                 end
@@ -440,7 +465,7 @@ local function getGameStats()
         end)
 
         -- Fallback ตรวจสอบ UI สำหรับ SummerPearls / AprilCoins
-        if (stats.summer_pearls or 0) == 0 and stats.april_coins == 0 then
+        if not foundDirectPearls and (stats.summer_pearls or 0) == 0 and stats.april_coins == 0 then
             pcall(function()
                 for _, obj in ipairs(pg:GetDescendants()) do
                     local n = obj.Name:lower()
@@ -459,34 +484,16 @@ local function getGameStats()
             end)
         end
 
-        -- Fallback สำหรับ AprilCoins กรณีอยู่ในหน้าต่างอื่นของ spawn_units หรือ PlayerGui
-        if stats.april_coins == 0 then
-            pcall(function()
-                for _, obj in ipairs(pg:GetDescendants()) do
-                    if obj.Name == "AprilCoins" then
-                        local lbl = obj:FindFirstChild("Level") or obj:FindFirstChild("Amount")
-                        if lbl and (lbl:IsA("TextLabel") or lbl:IsA("TextBox")) then
-                            local val = parseNumber(lbl.Text)
-                            if val > 0 then
-                                stats.april_coins = val
-                                break
-                            end
-                        end
-                    end
-                end
-            end)
-        end
-
         -- 2. ตรวจสอบ UI หน้ารวมตอนอยู่ใน Lobby (Spawn UI)
         pcall(function()
             local spawnGui = pg:FindFirstChild("Spawn") and pg.Spawn:FindFirstChild("Main")
             if spawnGui then
                 local top = spawnGui:FindFirstChild("Main") and spawnGui.Main:FindFirstChild("Top")
                 if top then
-                    if top:FindFirstChild("Gems") and top.Gems:FindFirstChild("Amount") then
+                    if not foundDirectGems and top:FindFirstChild("Gems") and top.Gems:FindFirstChild("Amount") then
                         stats.gems = parseNumber(top.Gems.Amount.Text)
                     end
-                    if top:FindFirstChild("Gold") and top.Gold:FindFirstChild("Amount") then
+                    if not foundDirectGold and top:FindFirstChild("Gold") and top.Gold:FindFirstChild("Amount") then
                         stats.gold = parseNumber(top.Gold.Amount.Text)
                     end
                     if stats.level == 0 and top:FindFirstChild("Level") and top.Level:FindFirstChild("Amount") then
@@ -498,15 +505,15 @@ local function getGameStats()
         end)
 
         -- 3. ตรวจ Collection UI (หน้าดูของ/เพชร)
-        if stats.gems == 0 then
+        if not foundDirectGems and stats.gems == 0 then
             pcall(function()
                 local collection = pg:FindFirstChild("Collection") and pg.Collection:FindFirstChild("Main")
                 if collection and collection:FindFirstChild("Currency") then
                     local curr = collection.Currency
-                    if curr:FindFirstChild("Gems") and curr.Gems:FindFirstChild("Amount") then
+                    if not foundDirectGems and curr:FindFirstChild("Gems") and curr.Gems:FindFirstChild("Amount") then
                         stats.gems = parseNumber(curr.Gems.Amount.Text)
                     end
-                    if curr:FindFirstChild("Gold") and curr.Gold:FindFirstChild("Amount") then
+                    if not foundDirectGold and curr:FindFirstChild("Gold") and curr.Gold:FindFirstChild("Amount") then
                         stats.gold = parseNumber(curr.Gold.Amount.Text)
                     end
                 end
@@ -535,9 +542,9 @@ local function getGameStats()
         if folder then
             for _, item in ipairs(folder:GetChildren()) do
                 local name = item.Name:lower()
-                if stats.gems == 0 and (name:find("gem") or name:find("diamond") or name:find("jewel") or name:find("emerald")) then
+                if not foundDirectGems and stats.gems == 0 and (name:find("gem") or name:find("diamond") or name:find("jewel") or name:find("emerald")) then
                     stats.gems = parseNumber(item.Value)
-                elseif stats.gold == 0 and (name:find("gold") or name:find("coin") or name:find("cash") or name:find("yen") or name:find("beli")) then
+                elseif not foundDirectGold and stats.gold == 0 and (name:find("gold") or name:find("coin") or name:find("cash") or name:find("yen") or name:find("beli")) then
                     stats.gold = parseNumber(item.Value)
                 elseif stats.level == 0 and (name:find("level") or name:find("lvl") or name:find("lv")) then
                     stats.level = parseLevel(item.Value) or 0
@@ -549,13 +556,13 @@ local function getGameStats()
     end
 
     -- 6. ตรวจสอบผ่าน Player Attributes
-    if stats.gems == 0 then
+    if not foundDirectGems and stats.gems == 0 then
         for _, attr in ipairs({"Gems", "Gem", "Diamonds"}) do
             local v = player:GetAttribute(attr)
             if v ~= nil then stats.gems = parseNumber(v) break end
         end
     end
-    if stats.gold == 0 then
+    if not foundDirectGold and stats.gold == 0 then
         for _, attr in ipairs({"Gold", "Coins", "Cash", "Yen"}) do
             local v = player:GetAttribute(attr)
             if v ~= nil then stats.gold = parseNumber(v) break end
@@ -569,10 +576,10 @@ local function getGameStats()
     end
 
     -- 7. Smart UI Fallback Scanner
-    if stats.gems == 0 then
+    if not foundDirectGems and stats.gems == 0 then
         stats.gems = findGuiStat("gem") or 0
     end
-    if stats.gold == 0 then
+    if not foundDirectGold and stats.gold == 0 then
         stats.gold = findGuiStat("gold") or findGuiStat("coin") or 0
     end
 
@@ -646,6 +653,7 @@ sendTelemetry = function(customStatus)
         gems = gameStats.gems,
         gold = gameStats.gold,
         april_coins = gameStats.april_coins,
+        summer_pearls = gameStats.summer_pearls,
         wins = sessionWins,
         disconnects = sessionDisconnects,
         extra_stats = {

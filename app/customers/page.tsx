@@ -117,7 +117,7 @@ export default function CustomersPage() {
 
   // Search & Filters
   const [searchQuery, setSearchQuery] = useState<string>("");
-  const [statusFilter, setStatusFilter] = useState<string>("ALL");
+  const [statusFilter, setStatusFilter] = useState<string>("FARMING");
   const [paymentFilter, setPaymentFilter] = useState<string>("ALL");
 
   // Modal State for Add / Edit
@@ -585,7 +585,7 @@ export default function CustomersPage() {
       text += `⭐ เลเวลปัจจุบัน: Lv.${liveBot.level}\n`;
       const pearls = liveBot.summer_pearls ?? liveBot.april_coins ?? 0;
       if (pearls > 0) {
-        text += `🦪 Summer Pearls: ${formatNumber(pearls)}\n`;
+        text += `☀️ Summer Coin: ${formatNumber(pearls)}\n`;
       }
       text += `🏆 ชนะด่านสะสม: ${liveBot.wins} รอบ\n`;
       text += `🟢 สถานะในเกม: ออนไลน์ฟาร์มอยู่ (จอ ${order.assigned_device || liveBot.device_name || "Emu"})\n`;
@@ -1151,7 +1151,7 @@ export default function CustomersPage() {
                         </span>
                         {((liveBot.summer_pearls ?? liveBot.april_coins) || 0) > 0 && (
                           <span className="text-amber-300">
-                            🦪 {formatNumber(liveBot.summer_pearls ?? liveBot.april_coins)}
+                            ☀️ {formatNumber(liveBot.summer_pearls ?? liveBot.april_coins)}
                           </span>
                         )}
                         <span className="text-purple-300">

@@ -443,13 +443,15 @@ export default function RobloxFarmDashboardPage() {
         persistLogEntries((prev) => {
           const map = new Map<number, AccountLogEntry>();
           prev.forEach((item) => {
-            if (!onlineIds.has(item.user_id)) {
+            const ageSec = Math.max(0, currentSec - (item.logged_at || currentSec));
+            if (!onlineIds.has(item.user_id) && ageSec <= 86400) {
               map.set(item.user_id, item);
             }
           });
           if (Array.isArray(data.logs)) {
             data.logs.forEach((srvItem) => {
-              if (onlineIds.has(srvItem.user_id)) return;
+              const srvAgeSec = Math.max(0, currentSec - (srvItem.logged_at || currentSec));
+              if (onlineIds.has(srvItem.user_id) || srvAgeSec > 86400) return;
               if (saveToLogPrefsRef.current[srvItem.user_id] === false) return;
               const existing = map.get(srvItem.user_id);
               if (
@@ -809,7 +811,7 @@ export default function RobloxFarmDashboardPage() {
           | "OFFLINE",
         seconds_since_update: secondsSinceUpdate,
       };
-    });
+    }).filter((acc) => acc.seconds_since_update <= 86400);
   }, [accounts, nowTick, saveToLogPrefs]);
 
   // Compute Live Summary Metrics
@@ -891,8 +893,12 @@ export default function RobloxFarmDashboardPage() {
   }, [enrichedAccounts]);
 
   const visibleLogEntries = useMemo(() => {
-    return logEntries.filter((item) => !activeOnlineUserIds.has(item.user_id));
-  }, [logEntries, activeOnlineUserIds]);
+    return logEntries.filter(
+      (item) =>
+        !activeOnlineUserIds.has(item.user_id) &&
+        Math.max(0, nowTick - (item.logged_at || nowTick)) <= 86400
+    );
+  }, [logEntries, activeOnlineUserIds, nowTick]);
 
   const logSummary = useMemo(() => {
     return visibleLogEntries.reduce(
@@ -940,7 +946,7 @@ export default function RobloxFarmDashboardPage() {
         (item, idx) =>
           `${idx + 1}. [${item.device_name || "PC"}] ${item.username} | 💎 Gems: ${formatNumber(
             item.gems
-          )} | 🌸 April Fool: ${formatNumber(
+          )} | ☀️ Summer Coin: ${formatNumber(
             item.april_coins || 0
           )} | ⭐ Lv.${item.level} | 🪙 Gold: ${formatNumber(item.gold)}`
       )
@@ -1280,10 +1286,10 @@ end)
             <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-pink-500/15 blur-2xl group-hover:bg-pink-400/25 transition" />
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-pink-300/90">
-                Summer Pearls รวม
+                Summer Coin รวม
               </span>
               <span className="flex h-10 w-10 items-center justify-center rounded-2xl border border-pink-400/30 bg-pink-500/15 text-xl shadow-inner">
-                🌸
+                ☀️
               </span>
             </div>
             <div className="mt-3 flex items-baseline gap-2.5">
@@ -1292,9 +1298,9 @@ end)
               </p>
             </div>
             <p className="mt-2 text-xs text-slate-400 flex items-center justify-between">
-              <span>ยอด Summer Pearls รวมทุกจอ</span>
+              <span>ยอด Summer Coin รวมทุกจอ</span>
               <span className="font-mono text-pink-300">
-                {formatCompact(liveSummary.total_april_coins)} Pearls
+                {formatCompact(liveSummary.total_april_coins)} Coins
               </span>
             </p>
           </div>
@@ -1499,7 +1505,7 @@ end)
                     value="april_coins_desc"
                     className="bg-slate-900 text-white"
                   >
-                    🌸 AprilPearls มากสุด
+                    ☀️ Summer Coin มากสุด
                   </option>
                   <option value="wins_desc" className="bg-slate-900 text-white">
                     🏆 ชนะมากสุด (Wins)
@@ -1781,11 +1787,7 @@ end)
                               <span>{acc.device_name || "PC"}</span>
                             </span>
 
-                            {acc.account_age > 0 && (
-                              <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-medium text-slate-400">
-                                อายุ {acc.account_age} วัน
-                              </span>
-                            )}
+
                           </div>
                         </div>
                       </div>
@@ -1879,8 +1881,8 @@ end)
                       <div className="rounded-2xl border border-white/10 bg-white/[0.025] p-3.5">
                         <div className="flex items-center justify-between gap-1">
                           <span className="text-[11px] font-bold uppercase tracking-wider text-pink-300 flex items-center gap-1">
-                            <span>🌸</span>
-                            <span>APRIL COINS</span>
+                            <span>☀️</span>
+                            <span>SUMMER COIN</span>
                           </span>
                         </div>
 
@@ -2169,7 +2171,7 @@ end)
 
                 <div className="rounded-2xl border border-pink-500/30 bg-fuchsia-950/20 p-3.5">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-pink-300">
-                    🦪 Summer Pearls รวม
+                    ☀️ Summer Coin รวม
                   </span>
                   <p className="mt-1 text-xl sm:text-2xl font-black text-pink-200 tabular-nums">
                     {formatNumber(logSummary.total_april_coins)}
@@ -2246,7 +2248,7 @@ end)
                         value="april_coins_desc"
                         className="bg-slate-900 text-white"
                       >
-                        🦪 Summer Pearls มากสุด
+                        ☀️ Summer Coin มากสุด
                       </option>
                       <option
                         value="level_desc"
@@ -2312,7 +2314,7 @@ end)
                         <th className="py-3 px-4">ชื่อไอดี (Account)</th>
                         <th className="py-3 px-4">🖥️ จอ / Emu</th>
                         <th className="py-3 px-4">💎 เพชร (Gems)</th>
-                        <th className="py-3 px-4">🦪 Summer Pearls</th>
+                        <th className="py-3 px-4">☀️ Summer Coin</th>
                         <th className="py-3 px-4">⭐ Level</th>
                         <th className="py-3 px-4">🪙 Gold</th>
                         <th className="py-3 px-4">สาเหตุ / เวลาบันทึก</th>
@@ -2323,7 +2325,7 @@ end)
                       {filteredLogs.map((item) => {
                         const rowCopyText = `[${item.device_name || "PC"}] ${item.username} | Gems: ${formatNumber(
                           item.gems
-                        )} | April Fool: ${formatNumber(
+                        )} | Summer Coin: ${formatNumber(
                           item.april_coins || 0
                         )} | Lv.${item.level} | Gold: ${formatNumber(
                           item.gold
