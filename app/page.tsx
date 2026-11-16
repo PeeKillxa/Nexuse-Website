@@ -731,6 +731,29 @@ export default function RobloxFarmDashboardPage() {
     await fetchTelemetry(true);
   };
 
+  const handleResetAllWins = async () => {
+    if (!confirm("ต้องการรีเซ็ตจำนวนชนะ (Wins) ของทุกไอดีเป็น 0 ทั้งหมดใช่หรือไม่?")) {
+      return;
+    }
+    try {
+      const res = await fetch("/api/telemetry", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reset_wins" }),
+      });
+      if (res.ok) {
+        setAccounts((prev) => prev.map((a) => ({ ...a, wins: 0 })));
+        prevAccountsRef.current.forEach((v, k) => {
+          prevAccountsRef.current.set(k, { ...v, wins: 0 });
+        });
+        pushToast("info", "🔄 รีเซ็ตจำนวนชนะแล้ว", "จำนวนชนะ (Wins) ของทุกไอดีถูกรีเซ็ตเป็น 0 เรียบร้อย");
+        await fetchTelemetry(true);
+      }
+    } catch {
+      pushToast("offline", "❌ รีเซ็ตไม่สำเร็จ", "กรุณาลองใหม่อีกครั้ง");
+    }
+  };
+
   const handleClearOffline = async () => {
     let savedCount = 0;
     enrichedAccounts.forEach((acc) => {
@@ -1276,6 +1299,15 @@ end)
               <span>
                 ประวัติจบด่าน <span className="text-indigo-300">({matchLogTotal})</span>
               </span>
+            </button>
+
+            <button
+              onClick={handleResetAllWins}
+              className="inline-flex items-center gap-2 rounded-xl border border-amber-400/35 bg-amber-500/15 px-3.5 py-2.5 text-sm font-semibold text-amber-100 transition hover:bg-amber-500/25"
+              title="รีเซ็ตจำนวนชนะสะสมของทุกไอดีกลับเป็น 0"
+            >
+              <span aria-hidden="true">🔄</span>
+              <span>รีเซ็ตชนะทั้งหมด</span>
             </button>
 
             <button

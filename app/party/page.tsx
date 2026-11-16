@@ -64,7 +64,7 @@ const DEFAULT_PARTY_STATE: PartySyncState = {
       name: "OBCXDI",
       aliases: ["obcxdi"],
       enabled: true,
-      note: "Emu (Android Device)",
+      note: "PC",
       added_at: 1730000003,
     },
     {
@@ -72,7 +72,7 @@ const DEFAULT_PARTY_STATE: PartySyncState = {
       name: "Albatross",
       aliases: ["albatross", "opxdmmd"],
       enabled: true,
-      note: "Emu (Android Device-4 / @OPXDMMD)",
+      note: "PC (@OPXDMMD)",
       added_at: 1730000004,
     },
   ],
@@ -815,7 +815,7 @@ end)`;
                   type="text"
                   value={newNote}
                   onChange={(e) => setNewNote(e.target.value)}
-                  placeholder="เช่น บนคอม PC, จอ Android Device-4..."
+                  placeholder="เช่น บนคอม PC, PC-1, Notebook..."
                   className="w-full rounded-xl border border-white/10 bg-slate-950 px-3.5 py-2 text-xs sm:text-sm text-white placeholder-slate-500 focus:border-purple-400 focus:outline-none"
                 />
               </div>

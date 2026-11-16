@@ -6,6 +6,7 @@ import {
   removeFinanceFromOrder,
   PartnerId,
 } from "@/app/lib/finance-store";
+import type { BaselineStats } from "@/app/lib/telemetry-types";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -28,11 +29,15 @@ export interface CustomerOrder {
   price?: number; // ราคา / ค่าบริการ (บาท)
   paid_status: PaymentStatus; // สถานะการจ่ายเงิน
   order_status: OrderStatus; // สถานะงาน
-  assigned_device?: string; // จอ / Emu ที่รับผิดชอบ (เช่น "Android Device-5", "Android Device-4", "PC")
+  assigned_device?: string; // จอ / เครื่องที่รับผิดชอบ (เช่น "PC")
   handled_by?: string; // ผู้รับงาน (เช่น "เรา", "เพื่อน")
   note?: string; // หมายเหตุเพิ่มเติม
   finance_tx_id?: string; // ลิ้งค์ ID รายการในระบบบัญชีกองกลาง 50/50
   finance_partner?: PartnerId; // ผู้รับเงินโอนเข้าบัญชี (A: พี, B: บ๊วย)
+  duration_hours?: number; // ระยะเวลาสัญญาจ้าง (ชั่วโมง เช่น 3 วัน = 72 ชม.)
+  job_started_at?: number; // Unix epoch ตอนเริ่มงาน/เริ่มจับเวลา
+  job_end_at?: number; // Unix epoch ตอนครบกำหนด
+  baseline_stats?: BaselineStats; // ค่าเริ่มต้นตอนรับงานสำหรับเทียบยอดที่ได้เพิ่ม
   created_at: number; // Unix epoch seconds
   updated_at: number; // Unix epoch seconds
 }
@@ -346,6 +351,32 @@ export async function POST(req: NextRequest) {
 
       const price = body.price !== undefined ? Math.max(0, Number(body.price)) : 0;
       const partner: PartnerId = body.finance_partner === "A" ? "A" : "B"; // ค่าเริ่มต้น: B (บ๊วย - คนรับโอนหลัก)
+      const durationHours =
+        body.duration_hours !== undefined && Number(body.duration_hours) > 0
+          ? Number(body.duration_hours)
+          : undefined;
+      const jobStartedAt = durationHours
+        ? Number(body.job_started_at) > 0
+          ? Number(body.job_started_at)
+          : nowSec
+        : undefined;
+      const jobEndAt =
+        durationHours && jobStartedAt
+          ? jobStartedAt + Math.round(durationHours * 3600)
+          : undefined;
+      const rawBaseline = body.baseline_stats as Partial<BaselineStats> | undefined;
+      const baselineStats: BaselineStats | undefined =
+        rawBaseline && typeof rawBaseline === "object"
+          ? {
+              gems: Number(rawBaseline.gems || 0),
+              gold: Number(rawBaseline.gold || 0),
+              summer_pearls: Number(rawBaseline.summer_pearls || 0),
+              rerolls: Number(rawBaseline.rerolls || 0),
+              level: Number(rawBaseline.level || 1),
+              wins: Number(rawBaseline.wins || 0),
+              captured_at: Number(rawBaseline.captured_at || nowSec),
+            }
+          : undefined;
 
       const newOrder: CustomerOrder = {
         id: `cust_${nowSec}_${Math.random().toString(36).slice(2, 7)}`,
@@ -370,6 +401,10 @@ export async function POST(req: NextRequest) {
         handled_by: String(body.handled_by || "").trim() || (partner === "B" ? "บ๊วย" : "พี"),
         note: String(body.note || "").trim() || undefined,
         finance_partner: partner,
+        duration_hours: durationHours,
+        job_started_at: jobStartedAt,
+        job_end_at: jobEndAt,
+        baseline_stats: baselineStats,
         created_at: nowSec,
         updated_at: nowSec,
       };
@@ -449,6 +484,41 @@ export async function POST(req: NextRequest) {
       }
       if (body.finance_partner !== undefined) {
         target.finance_partner = body.finance_partner === "A" ? "A" : "B";
+      }
+      if (body.duration_hours !== undefined) {
+        const hrs = Number(body.duration_hours);
+        if (hrs > 0) {
+          target.duration_hours = hrs;
+          if (body.restart_timer === true || !target.job_started_at) {
+            target.job_started_at =
+              Number(body.job_started_at) > 0 ? Number(body.job_started_at) : nowSec;
+          } else if (Number(body.job_started_at) > 0) {
+            target.job_started_at = Number(body.job_started_at);
+          }
+          target.job_end_at =
+            (target.job_started_at || nowSec) + Math.round(hrs * 3600);
+        } else {
+          target.duration_hours = undefined;
+          target.job_started_at = undefined;
+          target.job_end_at = undefined;
+        }
+      } else if (body.restart_timer === true && target.duration_hours && target.duration_hours > 0) {
+        target.job_started_at = nowSec;
+        target.job_end_at = nowSec + Math.round(target.duration_hours * 3600);
+      }
+      if (body.clear_baseline === true) {
+        target.baseline_stats = undefined;
+      } else if (body.baseline_stats && typeof body.baseline_stats === "object") {
+        const b = body.baseline_stats as Partial<BaselineStats>;
+        target.baseline_stats = {
+          gems: Number(b.gems || 0),
+          gold: Number(b.gold || 0),
+          summer_pearls: Number(b.summer_pearls || 0),
+          rerolls: Number(b.rerolls || 0),
+          level: Number(b.level || 1),
+          wins: Number(b.wins || 0),
+          captured_at: Number(b.captured_at || nowSec),
+        };
       }
 
       // If username changed, re-resolve avatar
@@ -539,6 +609,29 @@ export async function POST(req: NextRequest) {
           deleted_id: id,
           orders: state.orders,
           deleted_ids: state.deleted_ids,
+        },
+        { status: 200, headers: CORS_HEADERS }
+      );
+    }
+
+    // 3B. Cleanup legacy Android Device labels -> PC
+    if (action === "cleanup_android_devices") {
+      let updated = 0;
+      for (const ord of state.orders) {
+        if (ord.assigned_device && ord.assigned_device.startsWith("Android")) {
+          ord.assigned_device = "PC";
+          ord.updated_at = nowSec;
+          updated++;
+        }
+      }
+      if (updated > 0) {
+        await saveCustomersState(state);
+      }
+      return NextResponse.json(
+        {
+          ok: true,
+          updated_count: updated,
+          orders: state.orders,
         },
         { status: 200, headers: CORS_HEADERS }
       );

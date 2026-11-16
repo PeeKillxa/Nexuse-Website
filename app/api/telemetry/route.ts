@@ -32,6 +32,7 @@ export interface TelemetryPayload {
   summer_pearls?: number;
   rerolls?: number;
   wins?: number;
+  wins_reset_ack?: number;
   disconnects?: number;
   save_to_log?: boolean;
   team?: TeamUnitInfo[];
@@ -85,6 +86,7 @@ const OFFLINE_TIMEOUT_SECONDS = 120; // Account is marked OFFLINE if no heartbea
 const MAX_OFFLINE_AGE_SECONDS = 86400; // Auto-delete accounts & logs older than 1 day (86400s)
 const KV_HASH_KEY = "roblox:farm:accounts:v1";
 const KV_LOGS_HASH_KEY = "roblox:farm:logs:v1";
+const KV_WINS_RESET_KEY = "roblox:farm:wins_reset_at:v1";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -93,6 +95,32 @@ declare global {
   var __ROBLOX_FARM_LOGS__: Map<string, AccountLogEntry> | undefined;
   // eslint-disable-next-line no-var
   var __ROBLOX_AVATAR_CACHE__: Map<number, string> | undefined;
+  // eslint-disable-next-line no-var
+  var __ROBLOX_WINS_RESET_AT__: number | undefined;
+}
+
+async function getWinsResetAt(): Promise<number> {
+  if (globalThis.__ROBLOX_WINS_RESET_AT__ && globalThis.__ROBLOX_WINS_RESET_AT__ > 0) {
+    return globalThis.__ROBLOX_WINS_RESET_AT__;
+  }
+  const kv = getKvConfig();
+  if (kv) {
+    const raw = await kvCommand<string | number>(["GET", KV_WINS_RESET_KEY]);
+    const parsed = Number(raw || 0);
+    if (parsed > 0) {
+      globalThis.__ROBLOX_WINS_RESET_AT__ = parsed;
+      return parsed;
+    }
+  }
+  return 0;
+}
+
+async function setWinsResetAt(ts: number): Promise<void> {
+  globalThis.__ROBLOX_WINS_RESET_AT__ = ts;
+  const kv = getKvConfig();
+  if (kv) {
+    await kvCommand(["SET", KV_WINS_RESET_KEY, String(ts)]);
+  }
 }
 
 const memoryStore: Map<string, StoredAccount> =
@@ -282,13 +310,7 @@ async function getAllAccountLogs(): Promise<AccountLogEntry[]> {
   );
 }
 
-function resolveKnownDevice(username?: string): string {
-  if (!username) return "PC";
-  const u = username.toLowerCase();
-  if (u.includes("obcxdi")) return "Android Device";
-  if (u.includes("albatross") || u.includes("opxdmmd")) return "Android Device-4";
-  if (u.includes("reachg8cp")) return "Android Device-5";
-  if (u.includes("johnwick") || u.includes("kenqu")) return "PC";
+function resolveKnownDevice(): string {
   return "PC";
 }
 
@@ -301,7 +323,7 @@ async function saveAccountToLog(
   const rawDevice =
     acc.device_name ||
     ((acc as StoredAccount).extra_stats?.device_name as string) ||
-    resolveKnownDevice(acc.username) ||
+    resolveKnownDevice() ||
     "PC";
 
   const entry: AccountLogEntry = {
@@ -435,9 +457,14 @@ async function upsertAccountTelemetry(
   }
 
   const incomingStatus = String(payload.status || "ONLINE").toUpperCase();
+  const winsResetAt = await getWinsResetAt();
+  const clientAck = Number(payload.wins_reset_ack || 0);
   const prevWins = existing?.wins ?? 0;
   const incomingWins = Number(payload.wins ?? prevWins);
-  const wins = Math.max(prevWins, incomingWins);
+  const wins =
+    winsResetAt > 0 && clientAck < winsResetAt
+      ? 0
+      : Math.max(prevWins, incomingWins);
 
   const prevDisconnects = existing?.disconnects ?? 0;
   const incomingDisconnects = Number(payload.disconnects ?? prevDisconnects);
@@ -476,10 +503,11 @@ async function upsertAccountTelemetry(
     payload.device_name ||
     (payload.extra_stats?.device_name as string) ||
     existing?.device_name;
-  const deviceName =
+  const cleanDevice =
     typeof rawDeviceName === "string" && rawDeviceName.trim()
       ? rawDeviceName.trim()
-      : resolveKnownDevice(payload.username || existing?.username);
+      : resolveKnownDevice();
+  const deviceName = cleanDevice.startsWith("Android") ? "PC" : cleanDevice;
 
   const resolvedMapName = String(
     payload.map_name ||
@@ -544,6 +572,7 @@ async function upsertAccountTelemetry(
     summer_pearls: summerPearls,
     rerolls: resolvedRerolls,
     wins,
+    wins_reset_ack: clientAck || existing?.wins_reset_ack || 0,
     disconnects,
     save_to_log: saveToLog,
     team: resolvedTeam,
@@ -828,6 +857,32 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // 6. Reset all wins to 0 (and broadcast reset timestamp so running Luau clients reset sessionWins too)
+    if (body?.action === "reset_wins") {
+      const nowSec = Math.floor(Date.now() / 1000);
+      await setWinsResetAt(nowSec);
+      const all = await getAllStoredAccounts();
+      for (const acc of all) {
+        acc.wins = 0;
+        await saveStoredAccount(acc);
+      }
+      const logs = await getAllAccountLogs();
+      const kv = getKvConfig();
+      for (const log of logs) {
+        log.wins = 0;
+        memoryLogStore.set(String(log.user_id), log);
+        if (kv) {
+          await kvCommand(["HSET", KV_LOGS_HASH_KEY, String(log.user_id), JSON.stringify(log)]);
+        }
+      }
+      return NextResponse.json(
+        { ok: true, wins_reset_at: nowSec, reset_count: all.length },
+        { status: 200, headers: CORS_HEADERS }
+      );
+    }
+
+    const winsResetAt = await getWinsResetAt();
+
     // Batch payload support: { accounts: [ ... ] } or Array
     if (Array.isArray(body) || Array.isArray(body?.accounts)) {
       const list: TelemetryPayload[] = Array.isArray(body)
@@ -841,6 +896,7 @@ export async function POST(req: NextRequest) {
         {
           ok: true,
           updated_count: results.length,
+          wins_reset_at: winsResetAt,
           accounts: results,
         },
         { status: 200, headers: CORS_HEADERS }
@@ -853,6 +909,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         ok: true,
+        wins_reset_at: winsResetAt,
         account: savedAccount,
       },
       { status: 200, headers: CORS_HEADERS }

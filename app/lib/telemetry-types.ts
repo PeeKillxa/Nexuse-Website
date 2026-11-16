@@ -24,6 +24,16 @@ export interface PlacedUnitSummary {
   upg_max: number;
 }
 
+export interface BaselineStats {
+  gems: number;
+  gold: number;
+  summer_pearls: number;
+  rerolls: number;
+  level: number;
+  wins: number;
+  captured_at: number;
+}
+
 export interface MatchLogEntry {
   id: string;
   user_id: number;

@@ -4,7 +4,11 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import TeamStrip from "@/app/components/TeamStrip";
 import MatchHistoryModal from "@/app/components/MatchHistoryModal";
-import type { PortalSummary, TeamUnitInfo } from "@/app/lib/telemetry-types";
+import type {
+  BaselineStats,
+  PortalSummary,
+  TeamUnitInfo,
+} from "@/app/lib/telemetry-types";
 
 // ============================================================================
 // TYPES & INTERFACES
@@ -29,6 +33,10 @@ export interface CustomerOrder {
   note?: string;
   finance_tx_id?: string;
   finance_partner?: "A" | "B";
+  duration_hours?: number;
+  job_started_at?: number;
+  job_end_at?: number;
+  baseline_stats?: BaselineStats;
   created_at: number;
   updated_at: number;
 }
@@ -39,6 +47,7 @@ export interface TelemetryBrief {
   display_name?: string;
   level: number;
   gems: number;
+  gold?: number;
   april_coins: number;
   summer_pearls?: number;
   rerolls?: number;
@@ -74,13 +83,57 @@ const LOCAL_DELETED_KEY = "nexus_customer_deleted_v1";
 
 const DEFAULT_EMU_OPTIONS = [
   "PC",
-  "Android Device",
-  "Android Device-1",
-  "Android Device-2",
-  "Android Device-3",
-  "Android Device-4",
-  "Android Device-5",
+  "PC-1",
+  "PC-2",
+  "PC-3",
+  "Notebook",
 ];
+
+const DURATION_PRESETS = [
+  { label: "ไม่กำหนด", days: 0, hours: 0 },
+  { label: "1 วัน", days: 1, hours: 0 },
+  { label: "2 วัน", days: 2, hours: 0 },
+  { label: "3 วัน", days: 3, hours: 0 },
+  { label: "5 วัน", days: 5, hours: 0 },
+  { label: "7 วัน", days: 7, hours: 0 },
+];
+
+function sanitizeDeviceName(device?: string): string {
+  const clean = (device || "").trim();
+  if (!clean || clean.toLowerCase().startsWith("android")) return "PC";
+  return clean;
+}
+
+function formatRemainingCountdown(remainSec: number): string {
+  const safe = Math.max(0, Math.floor(remainSec));
+  const days = Math.floor(safe / 86400);
+  const hours = Math.floor((safe % 86400) / 3600);
+  const mins = Math.floor((safe % 3600) / 60);
+  const secs = safe % 60;
+  const pad2 = (n: number) => String(n).padStart(2, "0");
+  if (days > 0) {
+    return `${days} วัน ${pad2(hours)} ชม. ${pad2(mins)} นาที ${pad2(secs)} วินาที`;
+  }
+  return `${pad2(hours)} ชม. ${pad2(mins)} นาที ${pad2(secs)} วินาที`;
+}
+
+function buildBaselineFromBot(bot: TelemetryBrief): BaselineStats {
+  return {
+    gems: Number(bot.gems || 0),
+    gold: Number(bot.gold || 0),
+    summer_pearls: Number(bot.summer_pearls ?? bot.april_coins ?? 0),
+    rerolls: Number(bot.rerolls ?? bot.extra_stats?.rerolls ?? 0),
+    level: Number(bot.level || 1),
+    wins: Number(bot.wins || 0),
+    captured_at: Math.floor(Date.now() / 1000),
+  };
+}
+
+function formatSignedDelta(delta: number): string {
+  const n = Math.round(delta);
+  if (n > 0) return `+${n.toLocaleString("en-US")}`;
+  return n.toLocaleString("en-US");
+}
 
 function formatMoney(amount?: number): string {
   const num = Number(amount || 0);
@@ -147,12 +200,18 @@ export default function CustomersPage() {
   const [formPrice, setFormPrice] = useState<string>("");
   const [formPaidStatus, setFormPaidStatus] = useState<PaymentStatus>("UNPAID");
   const [formOrderStatus, setFormOrderStatus] = useState<OrderStatus>("FARMING");
-  const [formDevice, setFormDevice] = useState<string>("Android Device-5");
+  const [formDevice, setFormDevice] = useState<string>("PC");
   const [formHandledBy, setFormHandledBy] = useState<string>("บ๊วย");
   const [formPartner, setFormPartner] = useState<"A" | "B">("B");
   const [formSyncFinance, setFormSyncFinance] = useState<boolean>(true);
   const [formNote, setFormNote] = useState<string>("");
+  const [formDurationDays, setFormDurationDays] = useState<string>("");
+  const [formDurationHours, setFormDurationHours] = useState<string>("");
+  const [formRestartTimer, setFormRestartTimer] = useState<boolean>(false);
+  const [formResetBaseline, setFormResetBaseline] = useState<boolean>(false);
   const [savingForm, setSavingForm] = useState<boolean>(false);
+  const [nowTick, setNowTick] = useState<number>(() => Math.floor(Date.now() / 1000));
+  const autoBaselineAttemptedRef = React.useRef<Set<string>>(new Set());
 
   const showToast = useCallback((msg: string) => {
     setToastMsg(msg);
@@ -332,11 +391,53 @@ export default function CustomersPage() {
     const ordersTimer = setInterval(() => {
       loadOrders();
     }, 30000);
+    const countdownTimer = setInterval(() => {
+      setNowTick(Math.floor(Date.now() / 1000));
+    }, 1000);
     return () => {
       clearInterval(telemetryTimer);
       clearInterval(ordersTimer);
+      clearInterval(countdownTimer);
     };
   }, [loadOrders, loadTelemetry]);
+
+  // Auto-capture initial baseline stats when a FARMING order has live telemetry but no baseline yet
+  useEffect(() => {
+    const candidates = orders.filter((order) => {
+      if (order.order_status !== "FARMING") return false;
+      if (order.baseline_stats) return false;
+      if (autoBaselineAttemptedRef.current.has(order.id)) return false;
+      const bot = liveBots[order.username.toLowerCase()];
+      return Boolean(bot);
+    });
+    if (candidates.length === 0) return;
+
+    for (const order of candidates) {
+      const bot = liveBots[order.username.toLowerCase()];
+      if (!bot) continue;
+      autoBaselineAttemptedRef.current.add(order.id);
+      const snapshot = buildBaselineFromBot(bot);
+      fetch("/api/customers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_customer",
+          id: order.id,
+          baseline_stats: snapshot,
+        }),
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.ok && Array.isArray(data.orders)) {
+            setOrders(data.orders);
+            persistLocal(data.orders);
+          }
+        })
+        .catch(() => {
+          // ignore
+        });
+    }
+  }, [orders, liveBots, persistLocal]);
 
   const handleSyncOrdersNow = async () => {
     setSyncingOrders(true);
@@ -348,7 +449,7 @@ export default function CustomersPage() {
   };
 
   // Open Add Modal
-  const handleOpenAddModal = (initialUsername = "", initialDevice = "Android Device-5") => {
+  const handleOpenAddModal = (initialUsername = "", initialDevice = "PC") => {
     setEditingOrder(null);
     setFormFbName("");
     setFormFbLink("");
@@ -357,11 +458,15 @@ export default function CustomersPage() {
     setFormPrice("");
     setFormPaidStatus("UNPAID");
     setFormOrderStatus("FARMING");
-    setFormDevice(initialDevice);
+    setFormDevice(sanitizeDeviceName(initialDevice));
     setFormPartner("B");
     setFormSyncFinance(true);
     setFormHandledBy("บ๊วย");
     setFormNote("");
+    setFormDurationDays("");
+    setFormDurationHours("");
+    setFormRestartTimer(false);
+    setFormResetBaseline(false);
     setShowModal(true);
   };
 
@@ -375,11 +480,23 @@ export default function CustomersPage() {
     setFormPrice(order.price !== undefined && order.price > 0 ? String(order.price) : "");
     setFormPaidStatus(order.paid_status || "UNPAID");
     setFormOrderStatus(order.order_status || "FARMING");
-    setFormDevice(order.assigned_device || "PC");
+    setFormDevice(sanitizeDeviceName(order.assigned_device));
     setFormPartner(order.finance_partner || "B");
     setFormSyncFinance(Boolean(order.finance_tx_id) || true);
     setFormHandledBy(order.handled_by || (order.finance_partner === "A" ? "พี" : "บ๊วย"));
     setFormNote(order.note || "");
+    const totalHours = Number(order.duration_hours || 0);
+    if (totalHours > 0) {
+      const wholeDays = Math.floor(totalHours / 24);
+      const remHours = Math.round((totalHours % 24) * 10) / 10;
+      setFormDurationDays(wholeDays > 0 ? String(wholeDays) : "");
+      setFormDurationHours(remHours > 0 ? String(remHours) : "");
+    } else {
+      setFormDurationDays("");
+      setFormDurationHours("");
+    }
+    setFormRestartTimer(false);
+    setFormResetBaseline(false);
     setShowModal(true);
   };
 
@@ -395,6 +512,11 @@ export default function CustomersPage() {
     try {
       const isEdit = Boolean(editingOrder);
       const action = isEdit ? "update_customer" : "add_customer";
+      const daysNum = Math.max(0, Number(formDurationDays || 0));
+      const hoursNum = Math.max(0, Number(formDurationHours || 0));
+      const totalDurationHours = Math.round((daysNum * 24 + hoursNum) * 100) / 100;
+      const matchedBot = liveBots[formUsername.trim().toLowerCase()];
+
       const payload: Record<string, unknown> = {
         action,
         facebook_name: formFbName.trim(),
@@ -404,15 +526,24 @@ export default function CustomersPage() {
         price: formPrice ? Number(formPrice) : 0,
         paid_status: formPaidStatus,
         order_status: formOrderStatus,
-        assigned_device: formDevice.trim() || "PC",
+        assigned_device: sanitizeDeviceName(formDevice),
         handled_by: formHandledBy.trim() || (formPartner === "B" ? "บ๊วย" : "พี"),
         finance_partner: formPartner,
         sync_to_finance: formSyncFinance,
         note: formNote.trim(),
+        duration_hours: totalDurationHours,
       };
 
       if (isEdit && editingOrder) {
         payload.id = editingOrder.id;
+        if (formRestartTimer) {
+          payload.restart_timer = true;
+        }
+        if (formResetBaseline && matchedBot) {
+          payload.baseline_stats = buildBaselineFromBot(matchedBot);
+        }
+      } else if (matchedBot) {
+        payload.baseline_stats = buildBaselineFromBot(matchedBot);
       }
 
       const res = await fetch("/api/customers", {
@@ -596,6 +727,67 @@ export default function CustomersPage() {
     }
   };
 
+  const handleResetOrderBaseline = async (
+    order: CustomerOrder,
+    bot: TelemetryBrief
+  ) => {
+    try {
+      const snapshot = buildBaselineFromBot(bot);
+      const res = await fetch("/api/customers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_customer",
+          id: order.id,
+          baseline_stats: snapshot,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.orders)) {
+        setOrders(data.orders);
+        persistLocal(data.orders);
+        showToast(`📸 รีเซ็ตจุดเริ่มต้นของ @${order.username} เป็นค่าล่าสุดแล้ว`);
+      }
+    } catch {
+      showToast("❌ รีเซ็ตจุดเริ่มต้นไม่สำเร็จ");
+    }
+  };
+
+  const handleQuickSetDuration = async (
+    order: CustomerOrder,
+    durationHours: number
+  ) => {
+    try {
+      const bot = liveBots[order.username.toLowerCase()];
+      const payload: Record<string, unknown> = {
+        action: "update_customer",
+        id: order.id,
+        duration_hours: durationHours,
+        restart_timer: true,
+      };
+      if (!order.baseline_stats && bot) {
+        payload.baseline_stats = buildBaselineFromBot(bot);
+      }
+      const res = await fetch("/api/customers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.orders)) {
+        setOrders(data.orders);
+        persistLocal(data.orders);
+        const daysText =
+          durationHours % 24 === 0
+            ? `${durationHours / 24} วัน`
+            : `${durationHours} ชม.`;
+        showToast(`⏱️ เริ่มจับเวลา ${daysText} ให้ @${order.username} แล้ว`);
+      }
+    } catch {
+      showToast("❌ ตั้งเวลาไม่สำเร็จ");
+    }
+  };
+
   // Format & Copy Order Summary for Facebook Chat
   const handleCopyCustomerChat = (order: CustomerOrder) => {
     const liveBot = liveBots[order.username.toLowerCase()];
@@ -622,6 +814,17 @@ export default function CustomersPage() {
     text += `🎯 เป้าหมายที่หา: ${order.target_item}\n`;
     text += `📊 สถานะงาน: ${statusThai}\n`;
 
+    if (order.job_end_at && order.job_started_at) {
+      const remain = Math.max(0, order.job_end_at - nowTick);
+      const total = Math.max(1, order.job_end_at - order.job_started_at);
+      const pct = Math.min(100, Math.max(0, Math.round(((nowTick - order.job_started_at) / total) * 100)));
+      if (remain <= 0) {
+        text += `⏱️ ระยะเวลางาน: ✅ ครบกำหนดเวลาแล้ว (${pct}%)\n`;
+      } else {
+        text += `⏱️ ความคืบหน้า: ${pct}% | เหลืออีก ${formatRemainingCountdown(remain)}\n`;
+      }
+    }
+
     if (liveBot) {
       const liveMap =
         liveBot.map_name ||
@@ -638,7 +841,28 @@ export default function CustomersPage() {
         text += `☀️ Summer Coin: ${formatNumber(pearls)}\n`;
       }
       text += `🏆 ชนะด่านสะสม: ${liveBot.wins} รอบ\n`;
-      text += `🟢 สถานะในเกม: ออนไลน์ฟาร์มอยู่ (จอ ${order.assigned_device || liveBot.device_name || "Emu"})\n`;
+
+      if (order.baseline_stats) {
+        const base = order.baseline_stats;
+        const dGems = Number(liveBot.gems || 0) - Number(base.gems || 0);
+        const dPearls = Number(pearls) - Number(base.summer_pearls || 0);
+        const dGold = Number(liveBot.gold || 0) - Number(base.gold || 0);
+        const dRerolls =
+          Number(liveBot.rerolls ?? liveBot.extra_stats?.rerolls ?? 0) -
+          Number(base.rerolls || 0);
+        const dWins = Number(liveBot.wins || 0) - Number(base.wins || 0);
+        const gainParts: string[] = [];
+        if (dPearls !== 0) gainParts.push(`${formatSignedDelta(dPearls)} Pearls`);
+        if (dGems !== 0) gainParts.push(`${formatSignedDelta(dGems)} Gems`);
+        if (dGold !== 0) gainParts.push(`${formatSignedDelta(dGold)} Gold`);
+        if (dRerolls !== 0) gainParts.push(`${formatSignedDelta(dRerolls)} Rerolls`);
+        if (dWins !== 0) gainParts.push(`${formatSignedDelta(dWins)} Wins`);
+        if (gainParts.length > 0) {
+          text += `📈 ได้เพิ่มระหว่างฟาร์ม: ${gainParts.join(" | ")}\n`;
+        }
+      }
+
+      text += `🟢 สถานะในเกม: ออนไลน์ฟาร์มอยู่ (จอ ${sanitizeDeviceName(order.assigned_device || liveBot.device_name)})\n`;
     }
 
     if (order.price && order.price > 0) {
@@ -1061,14 +1285,10 @@ export default function CustomersPage() {
 
                         {/* Badges: Assigned Emu + Handled By */}
                         <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                          {/* Device / Emu Badge */}
+                          {/* Device Badge */}
                           <span className="inline-flex items-center gap-1 rounded-md border border-purple-400/35 bg-purple-500/15 px-2 py-0.5 text-[11px] font-bold text-purple-200">
-                            <span>
-                              {order.assigned_device?.startsWith("Android")
-                                ? "📱"
-                                : "💻"}
-                            </span>
-                            <span>{order.assigned_device || "PC"}</span>
+                            <span>💻</span>
+                            <span>{sanitizeDeviceName(order.assigned_device)}</span>
                           </span>
 
                           {/* Handled By */}
@@ -1183,6 +1403,91 @@ export default function CustomersPage() {
                     )}
                   </div>
 
+                  {/* ⏱️ Job Progress Bar & Real-Time Countdown */}
+                  {order.job_end_at && order.job_started_at ? (
+                    (() => {
+                      const totalSec = Math.max(
+                        1,
+                        order.job_end_at - order.job_started_at
+                      );
+                      const remainSec = Math.max(0, order.job_end_at - nowTick);
+                      const elapsedSec = Math.min(
+                        totalSec,
+                        Math.max(0, nowTick - order.job_started_at)
+                      );
+                      const pct = Math.min(
+                        100,
+                        Math.max(0, Math.round((elapsedSec / totalSec) * 1000) / 10)
+                      );
+                      const isTimeUp = remainSec <= 0;
+                      const durDays = Math.floor((order.duration_hours || 0) / 24);
+                      const durRemH = Math.round(((order.duration_hours || 0) % 24) * 10) / 10;
+                      const durLabel =
+                        durDays > 0 && durRemH > 0
+                          ? `${durDays} วัน ${durRemH} ชม.`
+                          : durDays > 0
+                          ? `${durDays} วัน`
+                          : `${order.duration_hours || 0} ชม.`;
+
+                      return (
+                        <div
+                          className={`rounded-2xl border p-3 space-y-2 ${
+                            isTimeUp
+                              ? "border-emerald-400/40 bg-emerald-950/20"
+                              : "border-amber-400/30 bg-amber-950/15"
+                          }`}
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                            <span className="font-bold text-amber-200 flex items-center gap-1.5">
+                              <span>⏱️ ความคืบหน้างาน ({durLabel})</span>
+                            </span>
+                            <span
+                              className={`font-mono font-extrabold ${
+                                isTimeUp ? "text-emerald-300" : "text-amber-300"
+                              }`}
+                            >
+                              {isTimeUp
+                                ? "✅ ครบกำหนดเวลาแล้ว (100%)"
+                                : `เหลืออีก ${formatRemainingCountdown(remainSec)} (${pct}%)`}
+                            </span>
+                          </div>
+                          <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-900/90 border border-white/10">
+                            <div
+                              className={`h-full rounded-full transition-all duration-500 ${
+                                isTimeUp
+                                  ? "bg-gradient-to-r from-emerald-500 to-teal-400"
+                                  : "bg-gradient-to-r from-amber-500 via-orange-400 to-cyan-400"
+                              }`}
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400">
+                            <span>เริ่ม: {formatThaiDate(order.job_started_at)}</span>
+                            <span>ครบกำหนด: {formatThaiDate(order.job_end_at)}</span>
+                          </div>
+                        </div>
+                      );
+                    })()
+                  ) : (
+                    order.order_status !== "COMPLETED" && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2 text-[11px]">
+                        <span className="text-slate-400">⏱️ ยังไม่ได้ตั้งเวลาจ้าง:</span>
+                        <div className="flex items-center gap-1.5">
+                          {[24, 72, 168].map((hrs) => (
+                            <button
+                              key={hrs}
+                              type="button"
+                              onClick={() => handleQuickSetDuration(order, hrs)}
+                              className="rounded-lg border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 font-bold text-amber-200 hover:bg-amber-500/25 transition"
+                            >
+                              + ตั้ง {hrs / 24} วัน
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  )}
+
                   {/* ⚡ Live Farm Telemetry Bridge Box */}
                   {liveBot ? (
                     <div className="space-y-2.5">
@@ -1204,7 +1509,7 @@ export default function CustomersPage() {
                               {isOnline ? "🟢 บอทกำลังออนไลน์" : "🔴 บอทออฟไลน์"}
                             </span>
                             <span className="text-xs font-mono text-slate-300">
-                              (จอ {liveBot.device_name || order.assigned_device || "PC"})
+                              ({sanitizeDeviceName(liveBot.device_name || order.assigned_device)})
                             </span>
                           </div>
 
@@ -1250,6 +1555,120 @@ export default function CustomersPage() {
 
                       {/* Equipped Team Strip */}
                       <TeamStrip team={liveBot.team} compact />
+
+                      {/* 📈 Net Gains Comparison Since Start (Excluding Baseline) */}
+                      {order.baseline_stats ? (
+                        (() => {
+                          const base = order.baseline_stats;
+                          const curPearls = Number(
+                            liveBot.summer_pearls ?? liveBot.april_coins ?? 0
+                          );
+                          const curRerolls = Number(
+                            liveBot.rerolls ?? liveBot.extra_stats?.rerolls ?? 0
+                          );
+                          const metrics = [
+                            {
+                              label: "🦪 Pearls",
+                              start: Number(base.summer_pearls || 0),
+                              now: curPearls,
+                              color: "text-amber-300",
+                            },
+                            {
+                              label: "💎 Gems",
+                              start: Number(base.gems || 0),
+                              now: Number(liveBot.gems || 0),
+                              color: "text-cyan-300",
+                            },
+                            {
+                              label: "🪙 Gold",
+                              start: Number(base.gold || 0),
+                              now: Number(liveBot.gold || 0),
+                              color: "text-yellow-300",
+                            },
+                            {
+                              label: "🎲 Rerolls",
+                              start: Number(base.rerolls || 0),
+                              now: curRerolls,
+                              color: "text-fuchsia-300",
+                            },
+                            {
+                              label: "🏆 Wins",
+                              start: Number(base.wins || 0),
+                              now: Number(liveBot.wins || 0),
+                              color: "text-emerald-300",
+                            },
+                            {
+                              label: "⭐ Lv",
+                              start: Number(base.level || 1),
+                              now: Number(liveBot.level || 1),
+                              color: "text-purple-300",
+                            },
+                          ];
+                          return (
+                            <div className="rounded-2xl border border-cyan-400/25 bg-slate-950/75 p-3 space-y-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                                <span className="font-bold text-cyan-200">
+                                  📈 ได้เพิ่มระหว่างทำงาน (ไม่รวมตอนเริ่ม)
+                                </span>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] text-slate-400">
+                                    จุดเริ่ม: {formatThaiDate(base.captured_at)}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleResetOrderBaseline(order, liveBot)}
+                                    className="rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-bold text-slate-300 hover:bg-white/15 transition"
+                                    title="รีเซ็ตจุดเริ่มต้นเป็นค่าตอนนี้"
+                                  >
+                                    🔄 รีจุดเริ่ม
+                                  </button>
+                                </div>
+                              </div>
+                              <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                                {metrics.map((m) => {
+                                  const delta = m.now - m.start;
+                                  return (
+                                    <div
+                                      key={m.label}
+                                      className="rounded-xl border border-white/10 bg-slate-900/80 px-2.5 py-1.5"
+                                    >
+                                      <div className="flex items-center justify-between gap-1 text-[11px]">
+                                        <span className="text-slate-400">{m.label}</span>
+                                        <span
+                                          className={`font-mono font-extrabold ${
+                                            delta > 0
+                                              ? "text-emerald-300"
+                                              : delta < 0
+                                              ? "text-rose-300"
+                                              : "text-slate-400"
+                                          }`}
+                                        >
+                                          {formatSignedDelta(delta)}
+                                        </span>
+                                      </div>
+                                      <div className="text-[10px] font-mono text-slate-500 mt-0.5 truncate">
+                                        {formatCompact(m.start)} →{" "}
+                                        <span className={m.color}>{formatCompact(m.now)}</span>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })()
+                      ) : (
+                        <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-3 py-1.5 text-[11px]">
+                          <span className="text-slate-400">📸 ยังไม่มีจุดเริ่มต้นเทียบยอด</span>
+                          <button
+                            type="button"
+                            onClick={() => handleResetOrderBaseline(order, liveBot)}
+                            className="rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-2 py-0.5 font-bold text-cyan-200 hover:bg-cyan-500/25 transition"
+                          >
+                            บันทึกค่าเริ่มต้นตอนนี้
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="rounded-2xl border border-dashed border-white/10 bg-slate-950/40 px-3 py-2 text-xs text-slate-500 flex items-center justify-between">
@@ -1507,11 +1926,102 @@ export default function CustomersPage() {
                       type="text"
                       value={formDevice}
                       onChange={(e) => setFormDevice(e.target.value)}
-                      placeholder="ระบุชื่อจอ..."
+                      placeholder="ระบุชื่อเครื่อง..."
                       className="flex-1 rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-xs sm:text-sm text-purple-200 font-bold placeholder-slate-500 focus:border-purple-400 focus:outline-none"
                     />
                   </div>
                 </div>
+              </div>
+
+              {/* ⏱️ Job Duration & Progress Timer + Gain Baseline */}
+              <div className="rounded-2xl border border-amber-400/25 bg-amber-950/15 p-3.5 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="text-xs font-black text-amber-200 flex items-center gap-1.5">
+                    <span>⏱️</span>
+                    <span>ระยะเวลาจ้าง & แถบความคืบหน้า (Countdown)</span>
+                  </label>
+                  <div className="flex flex-wrap items-center gap-1">
+                    {DURATION_PRESETS.map((preset) => {
+                      const isActive =
+                        Number(formDurationDays || 0) === preset.days &&
+                        Number(formDurationHours || 0) === preset.hours;
+                      return (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          onClick={() => {
+                            setFormDurationDays(preset.days > 0 ? String(preset.days) : "");
+                            setFormDurationHours(preset.hours > 0 ? String(preset.hours) : "");
+                          }}
+                          className={`rounded-lg px-2 py-1 text-[11px] font-bold border transition ${
+                            isActive
+                              ? "border-amber-400 bg-amber-500/25 text-amber-200"
+                              : "border-white/10 bg-slate-950/70 text-slate-400 hover:text-white"
+                          }`}
+                        >
+                          {preset.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <label className="block text-[11px] font-bold text-slate-300">
+                      จำนวนวัน (Days)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={formDurationDays}
+                      onChange={(e) => setFormDurationDays(e.target.value)}
+                      placeholder="เช่น 3"
+                      className="w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-1.5 text-xs sm:text-sm text-amber-200 font-bold placeholder-slate-500 focus:border-amber-400 focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="block text-[11px] font-bold text-slate-300">
+                      ชั่วโมงเพิ่มเติม (Hours)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="23"
+                      step="0.5"
+                      value={formDurationHours}
+                      onChange={(e) => setFormDurationHours(e.target.value)}
+                      placeholder="เช่น 0"
+                      className="w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-1.5 text-xs sm:text-sm text-amber-200 font-bold placeholder-slate-500 focus:border-amber-400 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                {editingOrder && (
+                  <div className="flex flex-col gap-1.5 pt-1 border-t border-amber-400/15 text-[11px]">
+                    <label className="inline-flex items-center gap-2 cursor-pointer text-slate-300">
+                      <input
+                        type="checkbox"
+                        checked={formRestartTimer}
+                        onChange={(e) => setFormRestartTimer(e.target.checked)}
+                        className="rounded accent-amber-400 h-3.5 w-3.5"
+                      />
+                      <span>รีเซ็ตเวลานับถอยหลังใหม่เริ่มตั้งแต่ตอนนี้</span>
+                    </label>
+                    {liveBots[formUsername.trim().toLowerCase()] && (
+                      <label className="inline-flex items-center gap-2 cursor-pointer text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={formResetBaseline}
+                          onChange={(e) => setFormResetBaseline(e.target.checked)}
+                          className="rounded accent-cyan-400 h-3.5 w-3.5"
+                        />
+                        <span>รีเซ็ตจุดเริ่มต้น (Baseline) เป็นค่าปัจจุบันของบอทตอนนี้</span>
+                      </label>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* 🔗 Finance 50/50 Linking Section */}

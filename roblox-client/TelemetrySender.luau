@@ -242,6 +242,7 @@ local sessionWins = 0
 local sessionDisconnects = 0
 local cached_april_coins = 0
 local cached_summer_pearls = 0
+local lastWinsResetAck = 0
 local isFileSystemSupported = (writefile and readfile and isfile) and true or false
 local sendTelemetry -- forward declaration
 
@@ -262,6 +263,7 @@ if isFileSystemSupported then
                     sessionDisconnects = tonumber(data.disconnects) or 0
                     cached_april_coins = tonumber(data.april_coins) or 0
                 end
+                lastWinsResetAck = tonumber(data.wins_reset_ack) or 0
             end
         end
     end)
@@ -278,7 +280,8 @@ local function saveSessionData()
             last_seen = os.time(),
             wins = sessionWins,
             disconnects = sessionDisconnects,
-            april_coins = cached_april_coins
+            april_coins = cached_april_coins,
+            wins_reset_ack = lastWinsResetAck
         }) .. "\n")
     end)
 end
@@ -1539,6 +1542,7 @@ sendTelemetry = function(customStatus)
         summer_pearls = gameStats.summer_pearls,
         rerolls = gameStats.rerolls,
         wins = sessionWins,
+        wins_reset_ack = lastWinsResetAck,
         disconnects = sessionDisconnects,
         team = teamList,
         portals = portalsList,
@@ -1559,7 +1563,7 @@ sendTelemetry = function(customStatus)
     pulseHeartbeat()
 
     pcall(function()
-        httpRequest({
+        local res = httpRequest({
             Url = API_URL,
             Method = "POST",
             Headers = {
@@ -1568,6 +1572,21 @@ sendTelemetry = function(customStatus)
             },
             Body = HttpService:JSONEncode(payload)
         })
+        local rawBody = type(res) == "table" and (res.Body or res.body) or nil
+        if type(rawBody) == "string" and #rawBody > 0 then
+            local okDec, decoded = pcall(function()
+                return HttpService:JSONDecode(rawBody)
+            end)
+            if okDec and type(decoded) == "table" then
+                local srvResetAt = tonumber(decoded.wins_reset_at) or 0
+                if srvResetAt > 0 and srvResetAt > lastWinsResetAck then
+                    sessionWins = 0
+                    lastWinsResetAck = srvResetAt
+                    saveSessionData()
+                    print(string.format("[FarmDashboard] 🔄 Wins reset acknowledged from server (%d)", srvResetAt))
+                end
+            end
+        end
     end)
 end
 
