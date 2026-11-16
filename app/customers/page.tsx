@@ -2,6 +2,9 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import TeamStrip from "@/app/components/TeamStrip";
+import MatchHistoryModal from "@/app/components/MatchHistoryModal";
+import type { PortalSummary, TeamUnitInfo } from "@/app/lib/telemetry-types";
 
 // ============================================================================
 // TYPES & INTERFACES
@@ -38,10 +41,18 @@ export interface TelemetryBrief {
   gems: number;
   april_coins: number;
   summer_pearls?: number;
+  rerolls?: number;
   wins: number;
   disconnects: number;
   effective_status?: "ONLINE" | "OFFLINE";
   device_name?: string;
+  game_name?: string;
+  map_name?: string;
+  map_difficulty?: string;
+  wave?: string;
+  team?: TeamUnitInfo[];
+  portals?: PortalSummary[];
+  extra_stats?: Record<string, number | string | boolean>;
 }
 
 interface CustomerApiResponse {
@@ -114,6 +125,10 @@ export default function CustomersPage() {
 
   // Live Telemetry from /api/telemetry for real-time bot checking
   const [liveBots, setLiveBots] = useState<Record<string, TelemetryBrief>>({});
+  const [matchLogCounts, setMatchLogCounts] = useState<Record<string, number>>({});
+  const [matchLogTotal, setMatchLogTotal] = useState<number>(0);
+  const [showMatchHistory, setShowMatchHistory] = useState<boolean>(false);
+  const [matchHistoryUsername, setMatchHistoryUsername] = useState<string>("");
 
   // Search & Filters
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -267,8 +282,28 @@ export default function CustomersPage() {
     }
   }, [persistLocal]);
 
+  const loadMatchLogCounts = useCallback(async () => {
+    try {
+      const res = await fetch("/api/match-logs", { cache: "no-store" });
+      if (res.ok) {
+        const data = (await res.json()) as {
+          ok: boolean;
+          total_count?: number;
+          counts_by_user?: Record<string, number>;
+        };
+        if (data.ok) {
+          setMatchLogTotal(data.total_count || 0);
+          setMatchLogCounts(data.counts_by_user || {});
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
   // Fetch telemetry to cross-reference customer usernames with online farm bots
   const loadTelemetry = useCallback(async () => {
+    loadMatchLogCounts();
     try {
       const res = await fetch("/api/telemetry", { cache: "no-store" });
       if (res.ok) {
@@ -286,7 +321,7 @@ export default function CustomersPage() {
     } catch {
       // ignore
     }
-  }, []);
+  }, [loadMatchLogCounts]);
 
   useEffect(() => {
     loadOrders();
@@ -467,11 +502,11 @@ export default function CustomersPage() {
     }
   };
 
-  // Delete Order
+  // Delete Order (also auto-cleans webhook match history for finished job)
   const handleDeleteOrder = async (order: CustomerOrder) => {
     if (
       !confirm(
-        `ต้องการลบรายการของ "${order.facebook_name}" (@${order.username}) ใช่หรือไม่?`
+        `ต้องการลบรายการของ "${order.facebook_name}" (@${order.username}) และล้างประวัติจบด่านของไอดีนี้ ใช่หรือไม่?`
       )
     ) {
       return;
@@ -487,7 +522,14 @@ export default function CustomersPage() {
       if (data.ok && Array.isArray(data.orders)) {
         setOrders(data.orders);
         persistLocal(data.orders, data.deleted_ids);
-        showToast(`🗑️ ลบข้อมูลของ ${order.facebook_name} เรียบร้อย`);
+        if (order.username) {
+          fetch(`/api/match-logs?username=${encodeURIComponent(order.username)}`, {
+            method: "DELETE",
+          })
+            .then(() => loadMatchLogCounts())
+            .catch(() => {});
+        }
+        showToast(`🗑️ ลบข้อมูลของ ${order.facebook_name} และประวัติแมพเรียบร้อย`);
       }
     } catch {
       showToast("❌ ลบไม่สำเร็จ");
@@ -581,6 +623,14 @@ export default function CustomersPage() {
     text += `📊 สถานะงาน: ${statusThai}\n`;
 
     if (liveBot) {
+      const liveMap =
+        liveBot.map_name ||
+        (liveBot.extra_stats?.map_name as string) ||
+        liveBot.game_name ||
+        "Anime Adventures";
+      const liveWave =
+        liveBot.wave || (liveBot.extra_stats?.wave as string) || "";
+      text += `🗺️ แมพปัจจุบัน: ${liveMap}${liveWave ? ` (${liveWave})` : ""}\n`;
       text += `💎 เพชรปัจจุบันในตัว: ${formatNumber(liveBot.gems)} Gems\n`;
       text += `⭐ เลเวลปัจจุบัน: Lv.${liveBot.level}\n`;
       const pearls = liveBot.summer_pearls ?? liveBot.april_coins ?? 0;
@@ -688,6 +738,17 @@ export default function CustomersPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
+            <button
+              onClick={() => {
+                setMatchHistoryUsername("");
+                setShowMatchHistory(true);
+              }}
+              className="inline-flex items-center gap-2 rounded-xl border border-indigo-400/35 bg-indigo-500/15 px-3.5 py-2.5 text-xs font-bold text-indigo-200 transition hover:bg-indigo-500/25"
+            >
+              <span>📜</span>
+              <span>ประวัติจบด่าน ({matchLogTotal})</span>
+            </button>
+
             <button
               onClick={handleSyncOrdersNow}
               disabled={syncingOrders}
@@ -1124,43 +1185,71 @@ export default function CustomersPage() {
 
                   {/* ⚡ Live Farm Telemetry Bridge Box */}
                   {liveBot ? (
-                    <div
-                      className={`rounded-2xl border p-3 flex flex-wrap items-center justify-between gap-3 ${
-                        isOnline
-                          ? "border-emerald-500/35 bg-emerald-950/20 text-emerald-200"
-                          : "border-rose-500/35 bg-rose-950/20 text-rose-200"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <span
-                          className={`h-2.5 w-2.5 rounded-full ${
-                            isOnline ? "bg-emerald-400 animate-ping" : "bg-rose-500"
-                          }`}
-                        />
-                        <span className="text-xs font-bold">
-                          {isOnline ? "🟢 บอทกำลังออนไลน์" : "🔴 บอทออฟไลน์"}
-                        </span>
-                        <span className="text-xs font-mono text-slate-300">
-                          (จอ {liveBot.device_name || order.assigned_device || "PC"})
-                        </span>
+                    <div className="space-y-2.5">
+                      <div
+                        className={`rounded-2xl border p-3 space-y-2 ${
+                          isOnline
+                            ? "border-emerald-500/35 bg-emerald-950/20 text-emerald-200"
+                            : "border-rose-500/35 bg-rose-950/20 text-rose-200"
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`h-2.5 w-2.5 rounded-full ${
+                                isOnline ? "bg-emerald-400 animate-ping" : "bg-rose-500"
+                              }`}
+                            />
+                            <span className="text-xs font-bold">
+                              {isOnline ? "🟢 บอทกำลังออนไลน์" : "🔴 บอทออฟไลน์"}
+                            </span>
+                            <span className="text-xs font-mono text-slate-300">
+                              (จอ {liveBot.device_name || order.assigned_device || "PC"})
+                            </span>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2.5 text-xs font-bold">
+                            <span className="text-cyan-300">
+                              💎 {formatNumber(liveBot.gems)}
+                            </span>
+                            {((liveBot.summer_pearls ?? liveBot.april_coins) || 0) > 0 && (
+                              <span className="text-amber-300">
+                                🦪 {formatNumber(liveBot.summer_pearls ?? liveBot.april_coins)}
+                              </span>
+                            )}
+                            <span className="text-purple-300">
+                              ⭐ Lv.{liveBot.level}
+                            </span>
+                            <span className="text-amber-300">
+                              🏆 ชนะ {liveBot.wins}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Live Map & Wave */}
+                        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-slate-950/65 px-2.5 py-1.5 text-xs">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="text-slate-400 shrink-0">🗺️ แมพ:</span>
+                            <span className="font-extrabold text-cyan-200 truncate">
+                              {liveBot.map_name ||
+                                (liveBot.extra_stats?.map_name as string) ||
+                                liveBot.game_name ||
+                                "Anime Adventures"}
+                            </span>
+                            {liveBot.map_difficulty && (
+                              <span className="rounded bg-white/10 px-1.5 py-0.2 text-[10px] font-bold text-amber-200 shrink-0">
+                                {liveBot.map_difficulty}
+                              </span>
+                            )}
+                          </div>
+                          <span className="rounded-md border border-cyan-400/30 bg-cyan-500/15 px-2 py-0.5 text-[10px] font-bold text-cyan-200 shrink-0">
+                            {String(liveBot.wave || liveBot.extra_stats?.wave || "Lobby")}
+                          </span>
+                        </div>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-3 text-xs font-bold">
-                        <span className="text-cyan-300">
-                          💎 {formatNumber(liveBot.gems)}
-                        </span>
-                        {((liveBot.summer_pearls ?? liveBot.april_coins) || 0) > 0 && (
-                          <span className="text-amber-300">
-                            ☀️ {formatNumber(liveBot.summer_pearls ?? liveBot.april_coins)}
-                          </span>
-                        )}
-                        <span className="text-purple-300">
-                          ⭐ Lv.{liveBot.level}
-                        </span>
-                        <span className="text-amber-300">
-                          🏆 ชนะ {liveBot.wins}
-                        </span>
-                      </div>
+                      {/* Equipped Team Strip */}
+                      <TeamStrip team={liveBot.team} compact />
                     </div>
                   ) : (
                     <div className="rounded-2xl border border-dashed border-white/10 bg-slate-950/40 px-3 py-2 text-xs text-slate-500 flex items-center justify-between">
@@ -1197,7 +1286,22 @@ export default function CustomersPage() {
                       )}
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {/* Match Webhook History Button */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMatchHistoryUsername(order.username || "");
+                          setShowMatchHistory(true);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-xl border border-indigo-400/40 bg-indigo-500/15 px-2.5 py-1 text-xs font-bold text-indigo-200 hover:bg-indigo-500/25 transition"
+                        title="ดูประวัติจบด่าน Webhook ของลูกค้าคนนี้"
+                      >
+                        <span>📜</span>
+                        <span>
+                          ผลแมพ ({matchLogCounts[(order.username || "").toLowerCase()] || 0})
+                        </span>
+                      </button>
                       {/* Copy Chat Text Button */}
                       <button
                         type="button"
@@ -1541,6 +1645,12 @@ export default function CustomersPage() {
           </div>
         </div>
       )}
+      <MatchHistoryModal
+        isOpen={showMatchHistory}
+        onClose={() => setShowMatchHistory(false)}
+        initialUsername={matchHistoryUsername}
+        onLogsChanged={loadMatchLogCounts}
+      />
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readStorageFile, writeStorageFile } from "@/app/lib/server-storage";
 import { getKvConfig, kvCommandSafe as kvCommand } from "@/app/lib/kv-config";
+import type { PortalSummary, TeamUnitInfo } from "@/app/lib/telemetry-types";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -17,17 +18,24 @@ export interface TelemetryPayload {
   device_name?: string;
   account_age?: number;
   game_name?: string;
+  map_name?: string;
+  map_difficulty?: string;
+  wave?: string;
   place_id?: number;
   job_id?: string;
   status?: "ONLINE" | "OFFLINE" | string;
   level?: number;
+  player_xp?: number;
   gems?: number;
   gold?: number;
   april_coins?: number;
   summer_pearls?: number;
+  rerolls?: number;
   wins?: number;
   disconnects?: number;
   save_to_log?: boolean;
+  team?: TeamUnitInfo[];
+  portals?: PortalSummary[];
   extra_stats?: Record<string, number | string | boolean>;
   ping?: number;
   fps?: number;
@@ -35,7 +43,9 @@ export interface TelemetryPayload {
   updated_at?: number;
 }
 
-export interface StoredAccount extends Required<Omit<TelemetryPayload, "extra_stats">> {
+export interface StoredAccount extends Required<Omit<TelemetryPayload, "extra_stats" | "team" | "portals">> {
+  team: TeamUnitInfo[];
+  portals: PortalSummary[];
   extra_stats: Record<string, number | string | boolean>;
   previous_gems: number;
   gems_delta: number;
@@ -471,6 +481,40 @@ async function upsertAccountTelemetry(
       ? rawDeviceName.trim()
       : resolveKnownDevice(payload.username || existing?.username);
 
+  const resolvedMapName = String(
+    payload.map_name ||
+      (payload.extra_stats?.map_name as string) ||
+      payload.game_name ||
+      existing?.map_name ||
+      existing?.game_name ||
+      "Anime Adventures"
+  );
+  const resolvedDifficulty = String(
+    payload.map_difficulty ||
+      (payload.extra_stats?.difficulty as string) ||
+      existing?.map_difficulty ||
+      ""
+  );
+  const resolvedWave = String(
+    payload.wave ||
+      (payload.extra_stats?.wave as string) ||
+      existing?.wave ||
+      "Lobby"
+  );
+  const resolvedRerolls = Number(
+    payload.rerolls ?? payload.extra_stats?.rerolls ?? existing?.rerolls ?? 0
+  );
+  const resolvedPlayerXp = Number(
+    payload.player_xp ?? payload.extra_stats?.player_xp ?? existing?.player_xp ?? 0
+  );
+  const resolvedTeam: TeamUnitInfo[] =
+    Array.isArray(payload.team) && payload.team.length > 0
+      ? payload.team
+      : existing?.team || [];
+  const resolvedPortals: PortalSummary[] = Array.isArray(payload.portals)
+    ? payload.portals
+    : existing?.portals || [];
+
   const record: StoredAccount = {
     user_id: userId,
     username: String(payload.username || existing?.username || `User_${userId}`),
@@ -486,17 +530,24 @@ async function upsertAccountTelemetry(
     game_name: String(
       payload.game_name || existing?.game_name || "Anime Adventures"
     ),
+    map_name: resolvedMapName,
+    map_difficulty: resolvedDifficulty,
+    wave: resolvedWave,
     place_id: Number(payload.place_id ?? existing?.place_id ?? 8304191830),
     job_id: String(payload.job_id || existing?.job_id || "unknown-job-id"),
     status: incomingStatus,
     level: Number(payload.level ?? existing?.level ?? 1),
+    player_xp: resolvedPlayerXp,
     gems: incomingGems,
     gold: Number(payload.gold ?? existing?.gold ?? 0),
     april_coins: aprilCoins,
     summer_pearls: summerPearls,
+    rerolls: resolvedRerolls,
     wins,
     disconnects,
     save_to_log: saveToLog,
+    team: resolvedTeam,
+    portals: resolvedPortals,
     extra_stats:
       payload.extra_stats && typeof payload.extra_stats === "object"
         ? payload.extra_stats

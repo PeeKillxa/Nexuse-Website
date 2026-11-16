@@ -1,6 +1,9 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import TeamStrip from "@/app/components/TeamStrip";
+import MatchHistoryModal from "@/app/components/MatchHistoryModal";
+import type { PortalSummary, TeamUnitInfo } from "@/app/lib/telemetry-types";
 
 // ============================================================================
 // TYPES & INTERFACES
@@ -13,19 +16,26 @@ interface AccountTelemetry {
   avatar_url: string;
   account_age: number;
   game_name: string;
+  map_name?: string;
+  map_difficulty?: string;
+  wave?: string;
   place_id: number;
   job_id: string;
   status: string;
   effective_status?: "ONLINE" | "OFFLINE";
   level: number;
+  player_xp?: number;
   gems: number;
   gold: number;
   april_coins: number;
   summer_pearls?: number;
+  rerolls?: number;
   wins: number;
   disconnects: number;
   device_name?: string;
   save_to_log?: boolean;
+  team?: TeamUnitInfo[];
+  portals?: PortalSummary[];
   extra_stats: Record<string, number | string | boolean>;
   ping: number;
   fps: number;
@@ -254,6 +264,10 @@ export default function RobloxFarmDashboardPage() {
   const [toasts, setToasts] = useState<ToastAlert[]>([]);
   const [showLuauModal, setShowLuauModal] = useState<boolean>(false);
   const [showLogModal, setShowLogModal] = useState<boolean>(false);
+  const [showMatchHistoryModal, setShowMatchHistoryModal] = useState<boolean>(false);
+  const [matchHistoryUsername, setMatchHistoryUsername] = useState<string>("");
+  const [matchLogCounts, setMatchLogCounts] = useState<Record<string, number>>({});
+  const [matchLogTotal, setMatchLogTotal] = useState<number>(0);
   const [logEntries, setLogEntries] = useState<AccountLogEntry[]>([]);
   const [saveToLogPrefs, setSaveToLogPrefs] = useState<Record<number, boolean>>(
     {}
@@ -395,11 +409,31 @@ export default function RobloxFarmDashboardPage() {
     []
   );
 
+  const fetchMatchLogCounts = useCallback(async () => {
+    try {
+      const res = await fetch("/api/match-logs", { cache: "no-store" });
+      if (res.ok) {
+        const data = (await res.json()) as {
+          ok: boolean;
+          total_count?: number;
+          counts_by_user?: Record<string, number>;
+        };
+        if (data.ok) {
+          setMatchLogTotal(data.total_count || 0);
+          setMatchLogCounts(data.counts_by_user || {});
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
   // Fetch Telemetry from /api/telemetry
   const fetchTelemetry = useCallback(
     async (silent = false) => {
       if (!silent) setIsRefreshing(true);
       try {
+        fetchMatchLogCounts();
         const res = await fetch("/api/telemetry", {
           method: "GET",
           cache: "no-store",
@@ -860,6 +894,7 @@ export default function RobloxFarmDashboardPage() {
         acc.username?.toLowerCase().includes(q) ||
         acc.display_name?.toLowerCase().includes(q) ||
         acc.game_name?.toLowerCase().includes(q) ||
+        acc.map_name?.toLowerCase().includes(q) ||
         String(acc.user_id).includes(q)
       );
     });
@@ -1231,11 +1266,24 @@ end)
 
           <div className="flex flex-wrap items-center gap-2">
             <button
+              onClick={() => {
+                setMatchHistoryUsername("");
+                setShowMatchHistoryModal(true);
+              }}
+              className="inline-flex items-center gap-2 rounded-xl border border-indigo-400/35 bg-indigo-500/15 px-3.5 py-2.5 text-sm font-semibold text-indigo-100 transition hover:bg-indigo-500/25"
+            >
+              <span aria-hidden="true">📜</span>
+              <span>
+                ประวัติจบด่าน <span className="text-indigo-300">({matchLogTotal})</span>
+              </span>
+            </button>
+
+            <button
               onClick={() => setShowLogModal(true)}
               className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3.5 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.08]"
             >
               <span aria-hidden="true">▤</span>
-              <span>ประวัติ <span className="text-slate-400">({visibleLogEntries.length})</span></span>
+              <span>ประวัติลบจอ <span className="text-slate-400">({visibleLogEntries.length})</span></span>
             </button>
 
             <button
@@ -1937,7 +1985,7 @@ end)
                       </div>
                     </div>
 
-                    {/* GOLD & EXTRA STATS ROW */}
+                    {/* GOLD & REROLLS / WAVE ROW */}
                     <div className="mt-2.5 grid grid-cols-2 gap-2.5">
                       <div className="rounded-2xl border border-white/10 bg-white/[0.025] px-3.5 py-2.5">
                         <span className="text-[11px] font-semibold text-amber-300/90 flex items-center gap-1">
@@ -1950,52 +1998,79 @@ end)
 
                       <div className="rounded-2xl border border-white/10 bg-white/[0.025] px-3.5 py-2.5">
                         <span className="text-[11px] font-semibold text-purple-300/90 flex items-center gap-1">
-                          <span>🎲</span> Extra Stats
+                          <span>🎲</span> Trait Rerolls / Wave
                         </span>
-                        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs font-bold text-slate-200">
-                          {acc.extra_stats &&
-                          Object.keys(acc.extra_stats).length > 0 ? (
-                            Object.entries(acc.extra_stats)
-                              .slice(0, 2)
-                              .map(([k, v]) => (
-                                <span key={k} className="truncate">
-                                  {k}:{" "}
-                                  <span className="text-cyan-300">
-                                    {String(v)}
-                                  </span>
-                                </span>
-                              ))
-                          ) : (
-                            <span className="text-slate-500">ไม่มีข้อมูลเสริม</span>
-                          )}
+                        <div className="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-xs font-bold text-slate-200">
+                          <span className="text-sm sm:text-base font-extrabold text-purple-200 tabular-nums">
+                            {formatNumber(
+                              acc.rerolls ?? Number(acc.extra_stats?.rerolls ?? 0)
+                            )}
+                          </span>
+                          <span className="rounded-md bg-cyan-500/15 border border-cyan-400/30 px-2 py-0.5 text-[10px] font-bold text-cyan-200">
+                            {String(acc.wave || acc.extra_stats?.wave || "Lobby")}
+                          </span>
                         </div>
                       </div>
                     </div>
+
+                    {/* CURRENT EQUIPPED TEAM */}
+                    {Array.isArray(acc.team) && acc.team.length > 0 && (
+                      <div className="mt-2.5">
+                        <TeamStrip team={acc.team} compact />
+                      </div>
+                    )}
                   </div>
 
-                  {/* TELEMETRY METRICS FOOTER: Game Name, Ping, FPS, Uptime, Updated At */}
+                  {/* TELEMETRY METRICS FOOTER: Map Name, Ping, FPS, Uptime, Updated At */}
                   <div className="mt-4 pt-3.5 border-t border-white/10 space-y-2.5 text-xs">
-                    {/* Game Name & Server Job ID */}
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <span className="text-slate-400">🎮 แมพ:</span>
-                        <span className="font-bold text-cyan-200 truncate">
-                          {acc.game_name || "Unknown Game"}
+                    {/* Live Map Name + Difficulty + Webhook History Button */}
+                    <div className="rounded-xl border border-cyan-500/20 bg-slate-950/70 px-3 py-2 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                          🗺️ แมพปัจจุบัน
+                          {acc.map_difficulty ? ` • ${acc.map_difficulty}` : ""}
+                        </span>
+                        <span
+                          className="block font-extrabold text-cyan-200 truncate"
+                          title={
+                            acc.map_name ||
+                            String(acc.extra_stats?.map_name || "") ||
+                            acc.game_name
+                          }
+                        >
+                          {acc.map_name ||
+                            (acc.extra_stats?.map_name as string) ||
+                            acc.game_name ||
+                            "Anime Adventures"}
                         </span>
                       </div>
-                      {acc.job_id && (
+
+                      <div className="flex items-center gap-1.5 shrink-0">
                         <button
-                          onClick={() =>
-                            handleCopy(acc.job_id, `job-${acc.user_id}`)
-                          }
-                          className="shrink-0 rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[10px] text-slate-400 hover:text-white hover:border-cyan-400/40 transition"
-                          title="คัดลอก Job ID เซิร์ฟเวอร์"
+                          onClick={() => {
+                            setMatchHistoryUsername(acc.username || "");
+                            setShowMatchHistoryModal(true);
+                          }}
+                          className="rounded-lg border border-indigo-400/35 bg-indigo-500/15 px-2 py-1 text-[10px] font-bold text-indigo-200 hover:bg-indigo-500/30 transition"
+                          title="ดูประวัติจบด่าน Webhook ของไอดีนี้"
                         >
-                          {copiedText === `job-${acc.user_id}`
-                            ? "✓ Copied"
-                            : `Job: ${acc.job_id.slice(0, 8)}...`}
+                          📜 ผลแมพ ({matchLogCounts[(acc.username || "").toLowerCase()] || 0})
                         </button>
-                      )}
+
+                        {acc.job_id && (
+                          <button
+                            onClick={() =>
+                              handleCopy(acc.job_id, `job-${acc.user_id}`)
+                            }
+                            className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 font-mono text-[10px] text-slate-400 hover:text-white hover:border-cyan-400/40 transition"
+                            title="คัดลอก Job ID เซิร์ฟเวอร์"
+                          >
+                            {copiedText === `job-${acc.user_id}`
+                              ? "✓"
+                              : `${acc.job_id.slice(0, 6)}`}
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     {/* Ping, FPS, Uptime Pills */}
@@ -2463,6 +2538,12 @@ end)
           </div>
         </div>
       )}
+      <MatchHistoryModal
+        isOpen={showMatchHistoryModal}
+        onClose={() => setShowMatchHistoryModal(false)}
+        initialUsername={matchHistoryUsername}
+        onLogsChanged={fetchMatchLogCounts}
+      />
     </div>
   );
 }
